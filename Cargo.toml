@@ -1,0 +1,122 @@
+[workspace]
+resolver = "2"
+members = [
+    "services/common",
+    "services/platform",
+    "services/proxy",
+    "services/fast-path",
+    "services/shadow-analysis",
+    "services/decision",
+    "services/audit",
+    "services/cost-accounting",
+    "services/escalation",
+    "services/dashboard-api",
+    "services/notification",
+    "services/gateway",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+authors = ["ControlPlane AI"]
+repository = "https://github.com/controlplane-ai/controlplane-ai"
+
+[workspace.dependencies]
+# --- internal crates -------------------------------------------------------
+controlplane-common = { path = "services/common" }
+controlplane-platform = { path = "services/platform" }
+controlplane-proxy = { path = "services/proxy" }
+controlplane-fast-path = { path = "services/fast-path" }
+controlplane-shadow-analysis = { path = "services/shadow-analysis" }
+controlplane-decision = { path = "services/decision" }
+controlplane-audit = { path = "services/audit" }
+controlplane-cost-accounting = { path = "services/cost-accounting" }
+controlplane-escalation = { path = "services/escalation" }
+controlplane-dashboard-api = { path = "services/dashboard-api" }
+controlplane-notification = { path = "services/notification" }
+controlplane-gateway = { path = "services/gateway" }
+
+# --- async runtime / web ---------------------------------------------------
+tokio = { version = "1.43", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = [
+    "cors",
+    "trace",
+    "limit",
+    "request-id",
+    "timeout",
+    "set-header",
+] }
+bytes = "1"
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+
+# --- serialization ---------------------------------------------------------
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- domain primitives -----------------------------------------------------
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+regex = "1"
+
+# --- lock-free hot-reload --------------------------------------------------
+arc-swap = "1"
+
+# --- ONNX inference (bias/safety classifier) -------------------------------
+ort = "2"
+
+# --- errors / observability ------------------------------------------------
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# --- security --------------------------------------------------------------
+argon2 = "0.5"
+jsonwebtoken = "9"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+
+# --- infrastructure clients ------------------------------------------------
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "migrate",
+    "macros",
+] }
+async-nats = "0.50"
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
+dotenvy = "0.15"
+
+# --- streaming ----------------------------------------------------------------
+async-stream = "0.3"
+
+# --- config ----------------------------------------------------------------
+config = "0.14"
+
+# --- dev -------------------------------------------------------------------
+tempfile = "3"
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+debug = 1

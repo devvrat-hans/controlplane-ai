@@ -1,0 +1,32 @@
+[package]
+name = "controlplane-dashboard-api"
+description = "Backend-for-Frontend: REST + SSE live stream for the Next.js dashboard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+controlplane-common = { workspace = true }
+controlplane-platform = { workspace = true }
+controlplane-decision = { workspace = true }
+controlplane-audit = { workspace = true }
+controlplane-cost-accounting = { workspace = true }
+controlplane-escalation = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+async-nats = { workspace = true }
+futures = { workspace = true }
+sqlx = { workspace = true }
+jsonwebtoken = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-stream = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "controlplane-fast-path"
+description = "Synchronous fast-path policy checks: PII/secrets, cost caps, retry detection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+controlplane-common = { workspace = true }
+controlplane-platform = { workspace = true }
+arc-swap = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
