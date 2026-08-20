@@ -42,7 +42,8 @@ describe("Header", () => {
     expect(toggleBtn).toBeInTheDocument();
   });
 
-  it("renders user avatar with initials", () => {
+  it("renders user avatar with initials from session", () => {
+    sessionStorage.setItem("cp-user", JSON.stringify({ email: "admin@controlplane.ai", role: "admin" }));
     renderWithProviders(<Header />);
     expect(screen.getByText("AD")).toBeInTheDocument();
   });

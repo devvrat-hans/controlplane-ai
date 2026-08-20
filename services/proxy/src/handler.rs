@@ -241,7 +241,7 @@ async fn run_fast_path_safe(
     };
 
     let timeout_result = tokio::time::timeout(
-        std::time::Duration::from_millis(25),
+        std::time::Duration::from_millis(50),
         tokio::task::spawn_blocking({
             let engine = engine.clone();
             let body = body_str.to_string();
@@ -278,7 +278,7 @@ async fn run_fast_path_safe(
             FastPathSafeResult::pass()
         }
         Err(_) => {
-            warn!("Fast-path timed out (>25ms) — FAIL OPEN");
+            warn!("Fast-path timed out (>50ms) — FAIL OPEN");
             FastPathSafeResult::pass()
         }
     }

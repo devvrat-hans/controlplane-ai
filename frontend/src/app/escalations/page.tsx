@@ -6,8 +6,9 @@ import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { fetchApi } from "@/lib/api";
+import { useUser, canResolveEscalations } from "@/lib/auth";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
 interface EscalationCase {
   id: string;
@@ -31,6 +32,8 @@ interface EscalationListResponse {
 }
 
 export default function EscalationsPage() {
+  const user = useUser();
+  const canResolve = user ? canResolveEscalations(user.role) : false;
   const [tab, setTab] = useState<"open" | "resolved">("open");
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -150,6 +153,7 @@ export default function EscalationsPage() {
                   })
                 }
                 resolving={resolveMutation.isPending}
+                canResolve={canResolve}
               />
             ) : (
               <Card>
@@ -209,10 +213,12 @@ function CaseDetail({
   data,
   onResolve,
   resolving,
+  canResolve = true,
 }: {
   data: EscalationCase;
   onResolve: (action: string, reason: string) => void;
   resolving: boolean;
+  canResolve?: boolean;
 }) {
   const [reason, setReason] = useState("");
 
@@ -261,8 +267,8 @@ function CaseDetail({
           <p>App: {data.app_id}</p>
         </div>
 
-        {/* Resolution actions (only for open cases) */}
-        {data.status !== "resolved" && (
+        {/* Resolution actions (only for open cases + authorized users) */}
+        {data.status !== "resolved" && canResolve && (
           <div className="border-t border-border pt-4 space-y-3">
             <textarea
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none h-16"
@@ -305,6 +311,13 @@ function CaseDetail({
                 retraining
               </p>
             </div>
+          </div>
+        )}
+        {data.status !== "resolved" && !canResolve && (
+          <div className="border-t border-border pt-4">
+            <p className="text-sm text-muted-foreground">
+              You need admin or reviewer access to resolve escalations.
+            </p>
           </div>
         )}
 

@@ -45,7 +45,7 @@ describe("Sidebar", () => {
 
   it("shows version number", () => {
     render(<Sidebar />);
-    expect(screen.getByText("v0.1.0")).toBeInTheDocument();
+    expect(screen.getByText("v0.2.0")).toBeInTheDocument();
   });
 });
 

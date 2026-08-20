@@ -112,22 +112,27 @@ async fn main() -> Result<()> {
     let broadcaster = SseBroadcaster::new(1024);
     spawn_sse_bridge(broadcaster.clone(), subscriber.clone(), shutdown_rx.clone());
 
-    let dashboard_state = DashboardState {
-        pool: pool.clone(),
-        broadcaster: broadcaster.clone(),
-    };
-    let dashboard_app = dashboard_router(dashboard_state);
-    let api_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.dashboard_api_port).parse()?;
+    let api_handle = if let Some(ref db_pool) = pool {
+        let dashboard_state = DashboardState {
+            pool: db_pool.clone(),
+            broadcaster: broadcaster.clone(),
+        };
+        let dashboard_app = dashboard_router(dashboard_state);
+        let api_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.dashboard_api_port).parse()?;
 
-    let api_shutdown = shutdown_rx.clone();
-    let api_handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(api_addr).await.unwrap();
-        info!(addr = %api_addr, "Dashboard API listening");
-        axum::serve(listener, dashboard_app)
-            .with_graceful_shutdown(shutdown_signal(api_shutdown))
-            .await
-            .unwrap();
-    });
+        let api_shutdown = shutdown_rx.clone();
+        Some(tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(api_addr).await.unwrap();
+            info!(addr = %api_addr, "Dashboard API listening");
+            axum::serve(listener, dashboard_app)
+                .with_graceful_shutdown(shutdown_signal(api_shutdown))
+                .await
+                .unwrap();
+        }))
+    } else {
+        info!("Dashboard API skipped (no database connection)");
+        None
+    };
 
     // ─── Background Workers ──────────────────────────────────────────────
 
@@ -183,7 +188,9 @@ async fn main() -> Result<()> {
         std::time::Duration::from_secs(10),
         async {
             let _ = proxy_handle.await;
-            let _ = api_handle.await;
+            if let Some(handle) = api_handle {
+                let _ = handle.await;
+            }
         }
     ).await;
 

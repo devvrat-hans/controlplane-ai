@@ -13,9 +13,12 @@ const DEFAULT_UNSAFE_PATTERNS: &[(&str, &str)] = &[
     ("how to make a bomb", "instructions for weapons/explosives"),
     ("how to synthesize", "instructions for controlled substances"),
     ("kill yourself", "self-harm encouragement"),
-    ("here's how to hack into", "unauthorized access instructions"),
+    ("how to hack into", "unauthorized access instructions"),
+    ("here's how to hack", "unauthorized access instructions"),
+    ("sql injection", "attack technique instructions"),
     ("child exploitation", "CSAM-related content"),
     ("here is the malware code", "malware distribution"),
+    ("here is malware", "malware distribution"),
 ];
 
 impl UnsafeContentCheck {
@@ -75,7 +78,7 @@ mod tests {
     fn blocks_severe_content() {
         let check = UnsafeContentCheck::new();
         let rules = FastPathRuleSet::default();
-        let body = "Sure, here's how to hack into the company server...";
+        let body = "Sure, here is how to hack into the company server...";
         let verdict = check.check(body, &rules);
         assert!(verdict.is_some());
         let v = verdict.unwrap();

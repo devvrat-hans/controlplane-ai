@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
 const DEMO_ACCOUNTS = [
   { email: "admin@controlplane.ai", password: "admin123", role: "admin" },
@@ -62,7 +62,7 @@ export default function LoginPage() {
           <div className="mx-auto h-12 w-12 rounded-lg bg-primary flex items-center justify-center">
             <span className="text-lg font-bold text-primary-foreground">CP</span>
           </div>
-          <h1 className="mt-4 text-2xl font-bold">ControlPlane.ai</h1>
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight-brand">ControlPlane</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Sign in to the governance dashboard
           </p>

@@ -4,8 +4,9 @@ import { useState } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { useUser, canEditPolicies } from "@/lib/auth";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
 interface PolicyThresholds {
   block_threshold: number;
@@ -24,20 +25,43 @@ const DEFAULT_THRESHOLDS: PolicyThresholds = {
 };
 
 const APPS = [
-  { id: "all", name: "All Applications" },
-  { id: "app-1", name: "chatbot-prod" },
-  { id: "app-2", name: "copilot-internal" },
-  { id: "app-3", name: "support-agent" },
+  { id: "10000000-0000-0000-0000-000000000001", name: "ChatBot-Prod" },
+  { id: "10000000-0000-0000-0000-000000000002", name: "Agent-Internal" },
+  { id: "10000000-0000-0000-0000-000000000003", name: "RAG-Customer-Support" },
 ];
 
 export default function PoliciesPage() {
-  const [selectedApp, setSelectedApp] = useState("all");
+  const user = useUser();
+  const isEditable = user ? canEditPolicies(user.role) : false;
+  const [selectedApp, setSelectedApp] = useState(APPS[0].id);
   const [thresholds, setThresholds] = useState<PolicyThresholds>(DEFAULT_THRESHOLDS);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  const loadPolicy = async (appId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/policies/${appId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.policies && data.policies.length > 0) {
+          const config = data.policies[0].config;
+          if (config) {
+            setThresholds({
+              block_threshold: config.block_threshold ?? DEFAULT_THRESHOLDS.block_threshold,
+              escalate_threshold: config.escalate_threshold ?? DEFAULT_THRESHOLDS.escalate_threshold,
+              max_tokens_per_request: config.max_tokens_per_request ?? DEFAULT_THRESHOLDS.max_tokens_per_request,
+              retry_max_count: config.retry_max_count ?? DEFAULT_THRESHOLDS.retry_max_count,
+              unsafe_keywords: config.unsafe_keywords ?? [],
+            });
+            return;
+          }
+        }
+      }
+    } catch { /* fall through to defaults */ }
+    setThresholds(DEFAULT_THRESHOLDS);
+  };
+
   const handleSave = async () => {
-    if (selectedApp === "all") return;
     setSaving(true);
     setSaved(false);
 
@@ -70,7 +94,7 @@ export default function PoliciesPage() {
           </div>
           <select
             value={selectedApp}
-            onChange={(e) => setSelectedApp(e.target.value)}
+            onChange={(e) => { setSelectedApp(e.target.value); loadPolicy(e.target.value); }}
             className="h-9 rounded-md border border-input bg-background px-3 text-sm"
           >
             {APPS.map((app) => (
@@ -226,21 +250,22 @@ export default function PoliciesPage() {
 
         {/* Save button */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={handleSave}
-            disabled={selectedApp === "all" || saving}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {saving ? "Saving..." : "Save Policy"}
-          </button>
+          {isEditable ? (
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {saving ? "Saving..." : "Save Policy"}
+            </button>
+          ) : (
+            <span className="rounded-md border border-border px-4 py-2 text-sm text-muted-foreground">
+              Read-only (admin required)
+            </span>
+          )}
           {saved && (
             <span className="text-sm text-green-500">
               Policy saved successfully
-            </span>
-          )}
-          {selectedApp === "all" && (
-            <span className="text-xs text-muted-foreground">
-              Select a specific app to save changes
             </span>
           )}
         </div>
