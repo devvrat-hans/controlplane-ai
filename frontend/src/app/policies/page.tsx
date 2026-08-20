@@ -1,69 +1,350 @@
+"use client";
+
+import { useState } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+interface PolicyThresholds {
+  block_threshold: number;
+  escalate_threshold: number;
+  max_tokens_per_request: number;
+  retry_max_count: number;
+  unsafe_keywords: string[];
+}
+
+const DEFAULT_THRESHOLDS: PolicyThresholds = {
+  block_threshold: 0.9,
+  escalate_threshold: 0.6,
+  max_tokens_per_request: 4000,
+  retry_max_count: 3,
+  unsafe_keywords: [],
+};
+
+const APPS = [
+  { id: "all", name: "All Applications" },
+  { id: "app-1", name: "chatbot-prod" },
+  { id: "app-2", name: "copilot-internal" },
+  { id: "app-3", name: "support-agent" },
+];
 
 export default function PoliciesPage() {
+  const [selectedApp, setSelectedApp] = useState("all");
+  const [thresholds, setThresholds] = useState<PolicyThresholds>(DEFAULT_THRESHOLDS);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = async () => {
+    if (selectedApp === "all") return;
+    setSaving(true);
+    setSaved(false);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/policies/${selectedApp}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(thresholds),
+      });
+      if (res.ok) {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      }
+    } catch {
+      // API might not be running
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <DashboardShell>
       <div className="space-y-6">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">Policies</h2>
-          <p className="text-muted-foreground">
-            Configure detection thresholds and actions per app.
-          </p>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight">Policies</h2>
+            <p className="text-muted-foreground">
+              Configure detection thresholds per application.
+            </p>
+          </div>
+          <select
+            value={selectedApp}
+            onChange={(e) => setSelectedApp(e.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+          >
+            {APPS.map((app) => (
+              <option key={app.id} value={app.id}>
+                {app.name}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-3">
-          <PolicyCard
-            axis="Performance"
-            description="Groundedness scoring, hallucination detection"
-            threshold="0.6"
-            action="Escalate"
-          />
-          <PolicyCard
-            axis="Cost"
-            description="Token budgets, retry detection, verbosity"
-            threshold="4096 tokens/req"
-            action="Block on exceed"
-          />
-          <PolicyCard
-            axis="Responsibility"
-            description="PII/secrets, bias, unsafe content"
-            threshold="0.7 confidence"
-            action="Edit (PII) / Block (unsafe)"
-          />
+        {/* Performance Axis */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-medium">
+              Performance Axis
+            </CardTitle>
+            <Badge variant="outline" className="text-xs">
+              Groundedness, Verbosity
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <ThresholdSlider
+              label="Block Threshold"
+              description="Block response if confidence exceeds this"
+              value={thresholds.block_threshold}
+              min={0.5}
+              max={1.0}
+              step={0.05}
+              onChange={(v) =>
+                setThresholds((t) => ({ ...t, block_threshold: v }))
+              }
+              action="Block"
+            />
+            <ThresholdSlider
+              label="Escalate Threshold"
+              description="Escalate to human review if confidence exceeds this"
+              value={thresholds.escalate_threshold}
+              min={0.3}
+              max={0.9}
+              step={0.05}
+              onChange={(v) =>
+                setThresholds((t) => ({ ...t, escalate_threshold: v }))
+              }
+              action="Escalate"
+            />
+          </CardContent>
+        </Card>
+
+        {/* Cost Axis */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-medium">Cost Axis</CardTitle>
+            <Badge variant="outline" className="text-xs">
+              Token Budget, Retry Detection
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium">
+                  Max Tokens Per Request
+                </label>
+                <span className="text-sm font-mono text-muted-foreground">
+                  {thresholds.max_tokens_per_request.toLocaleString()}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={500}
+                max={16000}
+                step={500}
+                value={thresholds.max_tokens_per_request}
+                onChange={(e) =>
+                  setThresholds((t) => ({
+                    ...t,
+                    max_tokens_per_request: parseInt(e.target.value),
+                  }))
+                }
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                <span>500</span>
+                <span>16,000</span>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium">
+                  Max Retries Before Escalation
+                </label>
+                <span className="text-sm font-mono text-muted-foreground">
+                  {thresholds.retry_max_count}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={10}
+                step={1}
+                value={thresholds.retry_max_count}
+                onChange={(e) =>
+                  setThresholds((t) => ({
+                    ...t,
+                    retry_max_count: parseInt(e.target.value),
+                  }))
+                }
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                <span>1</span>
+                <span>10</span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Responsibility Axis */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-medium">
+              Responsibility Axis
+            </CardTitle>
+            <Badge variant="outline" className="text-xs">
+              PII, Bias, Unsafe Content
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <label className="text-sm font-medium">
+                Blocked Keywords (comma-separated)
+              </label>
+              <p className="text-xs text-muted-foreground mb-2">
+                Responses containing these keywords are immediately blocked.
+              </p>
+              <textarea
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none h-20"
+                value={thresholds.unsafe_keywords.join(", ")}
+                onChange={(e) =>
+                  setThresholds((t) => ({
+                    ...t,
+                    unsafe_keywords: e.target.value
+                      .split(",")
+                      .map((k) => k.trim())
+                      .filter(Boolean),
+                  }))
+                }
+                placeholder="keyword1, keyword2, ..."
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Save button */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleSave}
+            disabled={selectedApp === "all" || saving}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {saving ? "Saving..." : "Save Policy"}
+          </button>
+          {saved && (
+            <span className="text-sm text-green-500">
+              Policy saved successfully
+            </span>
+          )}
+          {selectedApp === "all" && (
+            <span className="text-xs text-muted-foreground">
+              Select a specific app to save changes
+            </span>
+          )}
         </div>
+
+        {/* Policy version history placeholder */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">
+              Version History
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <VersionRow version={3} date="2026-08-19" change="Updated block threshold to 0.9" active />
+              <VersionRow version={2} date="2026-08-18" change="Added retry detection limit" />
+              <VersionRow version={1} date="2026-08-17" change="Initial policy creation" />
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </DashboardShell>
   );
 }
 
-function PolicyCard({
-  axis,
+function ThresholdSlider({
+  label,
   description,
-  threshold,
+  value,
+  min,
+  max,
+  step,
+  onChange,
   action,
 }: {
-  axis: string;
+  label: string;
   description: string;
-  threshold: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
   action: string;
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">{axis}</CardTitle>
-        <p className="text-sm text-muted-foreground">{description}</p>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">Threshold</span>
-          <span className="font-mono">{threshold}</span>
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-sm font-medium">{label}</label>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-mono text-muted-foreground">
+            {value.toFixed(2)}
+          </span>
+          <Badge
+            variant="outline"
+            className={`text-[10px] ${action === "Block" ? "text-red-500 border-red-500/30" : "text-orange-500 border-orange-500/30"}`}
+          >
+            {action}
+          </Badge>
         </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">Action</span>
-          <span>{action}</span>
-        </div>
-      </CardContent>
-    </Card>
+      </div>
+      <p className="text-xs text-muted-foreground mb-2">{description}</p>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full accent-primary"
+      />
+      <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+        <span>{min}</span>
+        <span>{max}</span>
+      </div>
+    </div>
+  );
+}
+
+function VersionRow({
+  version,
+  date,
+  change,
+  active,
+}: {
+  version: number;
+  date: string;
+  change: string;
+  active?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-md border border-border p-3">
+      <div className="flex items-center gap-3">
+        <span className="text-xs font-mono text-muted-foreground">
+          v{version}
+        </span>
+        <span className="text-sm">{change}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        {active && (
+          <Badge className="text-[10px] bg-green-500/10 text-green-500 border-green-500/20">
+            Active
+          </Badge>
+        )}
+        <span className="text-xs text-muted-foreground">{date}</span>
+      </div>
+    </div>
   );
 }

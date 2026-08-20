@@ -24,6 +24,8 @@ controlplane-escalation = { workspace = true }
 controlplane-dashboard-api = { workspace = true }
 controlplane-notification = { workspace = true }
 tokio = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }

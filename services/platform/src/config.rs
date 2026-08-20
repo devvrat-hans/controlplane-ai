@@ -25,8 +25,7 @@ impl AppConfig {
         dotenvy::dotenv().ok();
 
         Ok(Self {
-            database_url: std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://controlplane:secret@localhost:5432/controlplane".into()),
+            database_url: std::env::var("DATABASE_URL").unwrap_or_default(),
             nats_url: std::env::var("NATS_URL").ok(),
             proxy_listen_addr: std::env::var("PROXY_LISTEN_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:8900".into()),

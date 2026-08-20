@@ -28,6 +28,17 @@ Verify:
 - Dashboard on http://localhost:3000
 - API on http://localhost:8080
 
+## Automated demo exercise
+
+For a guided, scripted walk-through of all scenarios:
+
+```bash
+./scripts/demo_exercise.sh     # Linux/macOS
+.\scripts\demo_exercise.ps1    # Windows
+```
+
+This sends real requests and pauses between scenarios for narration.
+
 ## Demo flow (5 minutes)
 
 ### Act 1: Show the dashboard (30s)

@@ -20,3 +20,10 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "fast_path_bench"
+harness = false
