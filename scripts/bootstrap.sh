@@ -15,6 +15,13 @@ warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 step()  { echo -e "\n${BOLD}→ $1${NC}"; }
 
+# Detect docker compose variant (v2 plugin or v1 standalone)
+if docker compose version >/dev/null 2>&1; then
+    DC="docker compose"
+else
+    DC="docker-compose"
+fi
+
 echo -e "${BOLD}╔══════════════════════════════════════╗${NC}"
 echo -e "${BOLD}║    ControlPlane.ai — Bootstrap       ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════╝${NC}"
@@ -78,7 +85,7 @@ cd ..
 
 if command -v docker >/dev/null 2>&1; then
     step "Starting infrastructure (PostgreSQL + NATS)"
-    docker compose -f infra/docker-compose.yml up -d
+    $DC -f infra/docker-compose.yml up -d
     info "Infrastructure containers started"
 
     step "Waiting for PostgreSQL to be ready"

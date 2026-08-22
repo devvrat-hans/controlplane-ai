@@ -1,9 +1,24 @@
 "use client";
 
+import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { useTheme } from "@/components/providers/theme-provider";
 
 export function Header() {
   const { theme, toggle } = useTheme();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
 
   return (
     <header className="flex h-16 items-center justify-between border-b border-border px-6 bg-card">
@@ -52,18 +67,76 @@ export function Header() {
           )}
         </button>
 
-        {/* User */}
-        <div className="flex items-center gap-2.5 ml-1">
-          <div className="h-8 w-8 rounded-full bg-gradient-to-br from-chart-1 to-chart-2 flex items-center justify-center">
-            <span className="text-[11px] font-semibold text-white">AD</span>
-          </div>
-          <div className="hidden md:block">
-            <p className="text-[13px] font-medium leading-none">Admin</p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">admin@demo.local</p>
-          </div>
+        {/* User dropdown */}
+        <div ref={menuRef} className="relative ml-1">
+          <button
+            onClick={() => setMenuOpen(!menuOpen)}
+            className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent transition-colors cursor-pointer"
+          >
+            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-chart-1 to-chart-2 flex items-center justify-center">
+              <span className="text-[11px] font-semibold text-white">AD</span>
+            </div>
+            <div className="hidden md:block text-left">
+              <p className="text-[13px] font-medium leading-none">Admin</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">admin@demo.local</p>
+            </div>
+            <ChevronDownIcon className={`h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 ${menuOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          {/* Dropdown menu */}
+          {menuOpen && (
+            <div className="absolute right-0 top-full mt-2 w-56 rounded-xl border border-border bg-card shadow-vl5 py-1.5 z-50">
+              {/* User info header */}
+              <div className="px-3.5 py-2.5 border-b border-border">
+                <p className="text-[13px] font-medium">Admin</p>
+                <p className="text-[12px] text-muted-foreground">admin@demo.local</p>
+              </div>
+
+              {/* Menu items */}
+              <div className="py-1.5">
+                <DropdownItem icon={<UserIcon />} label="Profile" href="/settings" onClick={() => setMenuOpen(false)} />
+                <DropdownItem icon={<SettingsIcon />} label="Settings" href="/settings" onClick={() => setMenuOpen(false)} />
+                <DropdownItem icon={<KeyIcon />} label="API Keys" href="/settings" onClick={() => setMenuOpen(false)} />
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-border py-1.5">
+                <DropdownItem icon={<LogOutIcon />} label="Log out" href="/login" onClick={() => setMenuOpen(false)} danger />
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </header>
+  );
+}
+
+function DropdownItem({
+  icon,
+  label,
+  href,
+  onClick,
+  danger,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  href: string;
+  onClick?: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onClick}
+      className={`flex items-center gap-2.5 px-3.5 py-2 text-[13px] transition-colors ${
+        danger
+          ? "text-[#ee0000] hover:bg-[#ee0000]/5"
+          : "text-foreground hover:bg-accent"
+      }`}
+    >
+      <span className="w-4 h-4 shrink-0 opacity-70">{icon}</span>
+      {label}
+    </Link>
   );
 }
 
@@ -90,6 +163,50 @@ function MoonIcon({ className }: { className?: string }) {
   return (
     <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+function UserIcon() {
+  return (
+    <svg className="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg className="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function KeyIcon() {
+  return (
+    <svg className="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4" />
+    </svg>
+  );
+}
+
+function LogOutIcon() {
+  return (
+    <svg className="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <polyline points="16 17 21 12 16 7" />
+      <line x1="21" x2="9" y1="12" y2="12" />
     </svg>
   );
 }

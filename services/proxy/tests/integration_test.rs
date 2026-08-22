@@ -9,6 +9,7 @@ use tower::ServiceExt;
 
 use axum::routing::any;
 
+use controlplane_common::{create_provider, provider::ProviderKind};
 use controlplane_fast_path::{FastPathEngine, FastPathRuleSet, PolicyCache};
 use controlplane_platform::messaging::InProcessBus;
 use controlplane_proxy::handler::{proxy_handler, ProxyState};
@@ -22,6 +23,9 @@ fn test_proxy_app(upstream_url: &str) -> axum::Router {
 
     let state = Arc::new(ProxyState {
         upstream_base_url: upstream_url.to_string(),
+        upstream_api_key: "test-key".to_string(),
+        default_model: "claude-sonnet-4-20250514".to_string(),
+        provider: create_provider(ProviderKind::Anthropic),
         http_client: reqwest::Client::new(),
         fast_path,
         publisher: bus,
@@ -105,6 +109,9 @@ async fn fast_path_blocks_unsafe_content() {
 
     let state = Arc::new(ProxyState {
         upstream_base_url: format!("http://{}", addr),
+        upstream_api_key: "test-key".to_string(),
+        default_model: "claude-sonnet-4-20250514".to_string(),
+        provider: create_provider(ProviderKind::Anthropic),
         http_client: reqwest::Client::new(),
         fast_path,
         publisher: bus,

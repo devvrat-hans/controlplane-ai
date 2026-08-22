@@ -11,15 +11,17 @@ use uuid::Uuid;
 
 use controlplane_common::events::{EventEnvelope, ShadowAnalysisRequest, VerdictPayload};
 use controlplane_common::models::Verdict;
+use controlplane_common::provider::UpstreamProvider;
 use controlplane_common::types::{Outcome, Path as VerdictPath};
 use controlplane_common::events::subjects;
 use controlplane_fast_path::FastPathEngine;
 use controlplane_platform::messaging::EventPublisher;
 
-use crate::token_counter::extract_token_usage;
-
 pub struct ProxyState {
     pub upstream_base_url: String,
+    pub upstream_api_key: String,
+    pub default_model: String,
+    pub provider: Box<dyn UpstreamProvider>,
     pub http_client: reqwest::Client,
     pub fast_path: Arc<FastPathEngine>,
     pub publisher: Arc<dyn EventPublisher>,
@@ -52,22 +54,31 @@ pub async fn proxy_handler(
         }
     };
 
+    // Extract model from request body (provider-aware)
+    let model_in_body = state.provider.extract_model(&request_body)
+        .unwrap_or_else(|| state.default_model.clone());
+
     // Forward to upstream
-    let upstream_url = format!("{}{}", state.upstream_base_url, path);
+    let upstream_path = state.provider.rewrite_path(&path, &model_in_body);
+    let upstream_url = format!("{}{}", state.upstream_base_url, upstream_path);
     let upstream_start = Instant::now();
 
-    let mut upstream_request = state.http_client.request(method, &upstream_url);
+    let mut upstream_request = state.http_client.request(method.clone(), &upstream_url);
 
-    // Forward relevant headers (auth, content-type, anthropic-version)
+    // Forward relevant headers (content-type, etc.) — skip auth/host/transfer
     for (key, value) in headers.iter() {
         let key_str = key.as_str().to_lowercase();
         match key_str.as_str() {
-            "host" | "connection" | "transfer-encoding" | "content-length" => continue,
+            "host" | "connection" | "transfer-encoding" | "content-length"
+            | "x-api-key" | "anthropic-version" => continue,
             _ => {
                 upstream_request = upstream_request.header(key.clone(), value.clone());
             }
         }
     }
+
+    // Apply provider-specific auth
+    upstream_request = state.provider.apply_auth(upstream_request, &state.upstream_api_key);
 
     upstream_request = upstream_request.body(request_body.clone());
 
@@ -100,8 +111,8 @@ pub async fn proxy_handler(
         }
     };
 
-    // Extract token usage from response
-    let (input_tokens, output_tokens) = extract_token_usage(&response_body);
+    // Extract token usage from response (provider-aware)
+    let (input_tokens, output_tokens) = state.provider.extract_token_usage(&response_body);
 
     // --- Fast-path checks (synchronous, must complete before delivery) ---
     let fast_path_start = Instant::now();
