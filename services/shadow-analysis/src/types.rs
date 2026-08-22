@@ -22,6 +22,10 @@ pub struct ShadowConfig {
     pub semantic_pii_min_identifiers: usize,
     pub semantic_pii_risk_threshold: f32,
     pub provider: ProviderKind,
+    pub guardrails_url: Option<String>,
+    pub pii_enabled: bool,
+    pub toxicity_enabled: bool,
+    pub bias_enabled: bool,
 }
 
 impl Default for ShadowConfig {
@@ -34,6 +38,10 @@ impl Default for ShadowConfig {
             semantic_pii_min_identifiers: 3,
             semantic_pii_risk_threshold: 0.5,
             provider: ProviderKind::Anthropic,
+            guardrails_url: std::env::var("GUARDRAILS_URL").ok(),
+            pii_enabled: true,
+            toxicity_enabled: true,
+            bias_enabled: true,
         }
     }
 }

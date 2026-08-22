@@ -130,7 +130,7 @@ Everything runs in Docker. No Rust, Node.js, or PostgreSQL installation needed.
 docker compose up --build
 ```
 
-This single command starts 5 containers:
+This single command starts 6 containers:
 
 | Container | What it does |
 |-----------|-------------|
@@ -138,6 +138,7 @@ This single command starts 5 containers:
 | `controlplane-nats` | NATS message broker with JetStream |
 | `controlplane-mock-upstream` | Mock AI server (Python) that simulates an AI model |
 | `controlplane-gateway` | Rust gateway (reverse proxy on :8900 + dashboard API on :8081) |
+| `controlplane-guardrails` | Python sidecar — Presidio (PII) + transformers (Toxicity/Bias) on :8200 |
 | `controlplane-frontend` | Next.js dashboard on :3000 |
 
 After all containers are healthy (~2 min first build, ~10s thereafter):
@@ -209,6 +210,35 @@ curl -s http://localhost:8900/v1/messages -X POST \
 Each request immediately appears in the **Live Stream** with its verdict.
 The ESCALATE verdict appears ~1-2 seconds after the initial PASS (since the shadow-path is async).
 You can also check: **Audit** (hash-chained log), **Cost** (token tracking), **Escalations** (review queue), **Overview** (stats).
+
+#### AI Guardrails Testing (PII, Toxicity, Bias)
+
+ControlPlane uses **Microsoft Presidio** for PII detection and **HuggingFace transformers** (same models as LLM Guard) for Toxicity and Bias detection. These run in a Python sidecar container and are invoked by the shadow-path.
+
+Run the automated guardrails test suite:
+
+```powershell
+.\scripts\test_guardrails.ps1
+```
+
+This sends requests through the proxy that trigger each guardrail:
+
+| Test | What it triggers | Expected Live Stream verdict |
+|------|-----------------|---------------------------|
+| SSN + email in prompt | Presidio PII scanner | `presidio-pii` (EDIT/ESCALATE) |
+| Toxic hate speech | Toxicity model | `input-toxicity` (BLOCK/ESCALATE) |
+| Gender/racial bias | Bias model | `input-bias` (EDIT/ESCALATE) |
+| Clean educational prompt | Nothing | `fast-path-summary` (PASS) |
+| AWS key trigger | Fast-path secret scan | `fast-path-summary` (EDIT) |
+
+Verdicts appear in the **Live Stream** within 1-3 seconds (shadow-path is async).
+
+> The guardrails sidecar runs on port 8200. You can also test it directly:
+> ```powershell
+> Invoke-RestMethod http://localhost:8200/health
+> Invoke-RestMethod http://localhost:8200/scan/pii -Method Post -ContentType "application/json" -Body '{"text":"My SSN is 123-45-6789"}'
+> ```
+> Direct sidecar calls do **not** produce Live Stream verdicts (they bypass the proxy/shadow-path pipeline).
 
 > **Note**: You do NOT need to run `python scripts/mock_upstream.py` separately —
 > the mock AI is already running inside Docker as part of this setup.

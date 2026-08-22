@@ -1,5 +1,6 @@
 pub mod bias;
 pub mod groundedness;
+pub mod guardrails_client;
 pub mod pattern_promotion;
 pub mod semantic_pii;
 pub mod types;

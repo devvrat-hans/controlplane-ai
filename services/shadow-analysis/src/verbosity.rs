@@ -61,7 +61,7 @@ impl VerbosityChecker {
 
         let verdict = if verbosity_score > 0.6 || (info_density < self.min_density && length_ratio > self.max_ratio) {
             Some(ShadowVerdict {
-                axis: Axis::Cost,
+                axis: Axis::Performance,
                 check_name: "verbosity".to_string(),
                 outcome: Outcome::Escalate,
                 confidence: verbosity_score,

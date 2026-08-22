@@ -73,7 +73,7 @@ export function Sidebar() {
           </span>
         </div>
         <p className="mt-1 text-[10px] text-muted-foreground/60 font-mono">
-          v0.3.0
+          v0.4.0
         </p>
       </div>
     </aside>

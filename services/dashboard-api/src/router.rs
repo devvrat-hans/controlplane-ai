@@ -18,7 +18,7 @@ use crate::sse::{verdict_stream_handler, SseBroadcaster};
 /// Shared state for the dashboard API.
 #[derive(Clone)]
 pub struct DashboardState {
-    pub pool: PgPool,
+    pub pool: Option<PgPool>,
     pub broadcaster: SseBroadcaster,
     pub in_memory: InMemoryVerdictStore,
 }
@@ -155,7 +155,7 @@ async fn recent_verdicts(
             .bind(app_id)
             .bind(outcome)
             .bind(limit)
-            .fetch_all(&state.pool)
+            .fetch_all(pool)
             .await
         } else {
             sqlx::query_as::<_, VerdictRow>(
@@ -164,7 +164,7 @@ async fn recent_verdicts(
             )
             .bind(app_id)
             .bind(limit)
-            .fetch_all(&state.pool)
+            .fetch_all(pool)
             .await
         }
     } else if let Some(outcome) = &params.outcome {
@@ -174,7 +174,7 @@ async fn recent_verdicts(
         )
         .bind(outcome)
         .bind(limit)
-        .fetch_all(&state.pool)
+        .fetch_all(pool)
         .await
     } else {
         sqlx::query_as::<_, VerdictRow>(
@@ -182,7 +182,7 @@ async fn recent_verdicts(
              FROM verdicts ORDER BY created_at DESC LIMIT $1"
         )
         .bind(limit)
-        .fetch_all(&state.pool)
+        .fetch_all(pool)
         .await
     }.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
@@ -216,7 +216,7 @@ async fn stats_overview(
         "SELECT COUNT(*) FROM intercepted_calls WHERE created_at > $1"
     )
     .bind(now_minus_24h)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .unwrap_or((0,));
 
@@ -224,7 +224,7 @@ async fn stats_overview(
         "SELECT COUNT(*) FROM verdicts WHERE created_at > $1"
     )
     .bind(now_minus_24h)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .unwrap_or((0,));
 
@@ -232,7 +232,7 @@ async fn stats_overview(
         "SELECT COUNT(*) FROM verdicts WHERE outcome = 'block' AND created_at > $1"
     )
     .bind(now_minus_24h)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .unwrap_or((0,));
 
@@ -240,7 +240,7 @@ async fn stats_overview(
         "SELECT COUNT(*) FROM verdicts WHERE outcome = 'escalate' AND created_at > $1"
     )
     .bind(now_minus_24h)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .unwrap_or((0,));
 
@@ -248,14 +248,14 @@ async fn stats_overview(
         "SELECT COUNT(*) FROM verdicts WHERE outcome = 'pass' AND created_at > $1"
     )
     .bind(now_minus_24h)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .unwrap_or((0,));
 
     let open_escalations: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM escalation_cases WHERE status = 'open'"
     )
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .unwrap_or((0,));
 
@@ -263,7 +263,7 @@ async fn stats_overview(
         "SELECT AVG(latency_ms::double precision) FROM verdicts WHERE path = 'fast' AND created_at > $1"
     )
     .bind(now_minus_24h)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .unwrap_or((None,));
 
@@ -273,7 +273,7 @@ async fn stats_overview(
          GROUP BY axis ORDER BY count DESC LIMIT 5"
     )
     .bind(now_minus_24h)
-    .fetch_all(&state.pool)
+    .fetch_all(pool)
     .await
     .unwrap_or_default();
 
@@ -292,10 +292,12 @@ async fn stats_overview(
 async fn list_apps(
     State(state): State<Arc<DashboardState>>,
 ) -> Result<Json<Vec<AppRow>>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     let apps: Vec<AppRow> = sqlx::query_as(
         "SELECT id, name, team_id, created_at FROM apps ORDER BY name"
     )
-    .fetch_all(&state.pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
@@ -312,8 +314,10 @@ async fn health() -> Json<serde_json::Value> {
 async fn ready(
     State(state): State<Arc<DashboardState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     sqlx::query("SELECT 1")
-        .execute(&state.pool)
+        .execute(pool)
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("DB not ready: {e}")))?;
 
@@ -338,6 +342,8 @@ async fn get_policy(
     State(state): State<Arc<DashboardState>>,
     Path(app_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     let parsed_id = Uuid::parse_str(&app_id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid app_id".to_string()))?;
 
@@ -345,7 +351,7 @@ async fn get_policy(
         "SELECT id, axis, threshold_config, is_active FROM policies WHERE app_id = $1 AND is_active = true"
     )
     .bind(parsed_id)
-    .fetch_all(&state.pool)
+    .fetch_all(pool)
     .await
     .unwrap_or_default();
 
@@ -359,6 +365,8 @@ async fn update_policy(
     Path(app_id): Path<String>,
     Json(body): Json<PolicyUpdate>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     let parsed_id = Uuid::parse_str(&app_id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid app_id".to_string()))?;
 
@@ -382,7 +390,7 @@ async fn update_policy(
         .bind(parsed_id)
         .bind(axis)
         .bind(&config)
-        .execute(&state.pool)
+        .execute(pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error saving policy for axis {}: {e}", axis)))?;
     }
@@ -417,6 +425,8 @@ async fn list_escalations(
     State(state): State<Arc<DashboardState>>,
     Query(params): Query<EscalationListParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     let limit = params.limit.unwrap_or(50).min(200);
     let status = params.status.unwrap_or_else(|| "open".to_string());
 
@@ -426,7 +436,7 @@ async fn list_escalations(
     )
     .bind(&status)
     .bind(limit)
-    .fetch_all(&state.pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
@@ -444,6 +454,8 @@ async fn resolve_escalation(
     Path(id): Path<String>,
     Json(body): Json<ResolveBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     let parsed_id = Uuid::parse_str(&id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid escalation id".to_string()))?;
 
@@ -453,7 +465,7 @@ async fn resolve_escalation(
     .bind(&body.action)
     .bind(&body.reason)
     .bind(parsed_id)
-    .execute(&state.pool)
+    .execute(pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 

@@ -13,7 +13,9 @@ interface PolicyThresholds {
   escalate_threshold: number;
   max_tokens_per_request: number;
   retry_max_count: number;
-  unsafe_keywords: string[];
+  pii_detection: boolean;
+  toxicity_detection: boolean;
+  bias_detection: boolean;
 }
 
 const DEFAULT_THRESHOLDS: PolicyThresholds = {
@@ -21,7 +23,9 @@ const DEFAULT_THRESHOLDS: PolicyThresholds = {
   escalate_threshold: 0.6,
   max_tokens_per_request: 4000,
   retry_max_count: 3,
-  unsafe_keywords: [],
+  pii_detection: true,
+  toxicity_detection: true,
+  bias_detection: true,
 };
 
 const APPS = [
@@ -51,7 +55,9 @@ export default function PoliciesPage() {
               escalate_threshold: config.escalate_threshold ?? DEFAULT_THRESHOLDS.escalate_threshold,
               max_tokens_per_request: config.max_tokens_per_request ?? DEFAULT_THRESHOLDS.max_tokens_per_request,
               retry_max_count: config.retry_max_count ?? DEFAULT_THRESHOLDS.retry_max_count,
-              unsafe_keywords: config.unsafe_keywords ?? [],
+              pii_detection: config.pii_detection ?? DEFAULT_THRESHOLDS.pii_detection,
+              toxicity_detection: config.toxicity_detection ?? DEFAULT_THRESHOLDS.toxicity_detection,
+              bias_detection: config.bias_detection ?? DEFAULT_THRESHOLDS.bias_detection,
             });
             return;
           }
@@ -219,32 +225,40 @@ export default function PoliciesPage() {
               Responsibility Axis
             </CardTitle>
             <Badge variant="outline" className="text-xs">
-              PII, Bias, Unsafe Content
+              PII, Toxicity, Bias
             </Badge>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <label className="text-sm font-medium">
-                Blocked Keywords (comma-separated)
-              </label>
-              <p className="text-xs text-muted-foreground mb-2">
-                Responses containing these keywords are immediately blocked.
-              </p>
-              <textarea
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none h-20"
-                value={thresholds.unsafe_keywords.join(", ")}
-                onChange={(e) =>
-                  setThresholds((t) => ({
-                    ...t,
-                    unsafe_keywords: e.target.value
-                      .split(",")
-                      .map((k) => k.trim())
-                      .filter(Boolean),
-                  }))
-                }
-                placeholder="keyword1, keyword2, ..."
-              />
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Enable or disable governance guardrails powered by open-source frameworks.
+            </p>
+
+            <GuardrailToggle
+              label="PII Detection"
+              description="Detect and redact personally identifiable information (SSN, emails, credit cards, names, etc.)"
+              provider="Microsoft Presidio"
+              enabled={thresholds.pii_detection}
+              onChange={(v) => setThresholds((t) => ({ ...t, pii_detection: v }))}
+              disabled={!isEditable}
+            />
+
+            <GuardrailToggle
+              label="Toxicity Detection"
+              description="Block toxic, harmful, or unsafe content (hate speech, violence, self-harm)"
+              provider="LLM Guard"
+              enabled={thresholds.toxicity_detection}
+              onChange={(v) => setThresholds((t) => ({ ...t, toxicity_detection: v }))}
+              disabled={!isEditable}
+            />
+
+            <GuardrailToggle
+              label="Bias Detection"
+              description="Flag demographic stereotypes, cultural prejudices, or unfair treatment across protected groups"
+              provider="LLM Guard"
+              enabled={thresholds.bias_detection}
+              onChange={(v) => setThresholds((t) => ({ ...t, bias_detection: v }))}
+              disabled={!isEditable}
+            />
           </CardContent>
         </Card>
 
@@ -339,6 +353,52 @@ function ThresholdSlider({
         <span>{min}</span>
         <span>{max}</span>
       </div>
+    </div>
+  );
+}
+
+function GuardrailToggle({
+  label,
+  description,
+  provider,
+  enabled,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  description: string;
+  provider: string;
+  enabled: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className={`flex items-center justify-between rounded-lg border p-4 ${enabled ? "border-primary/30 bg-primary/5" : "border-border"}`}>
+      <div className="space-y-1 flex-1 mr-4">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{label}</span>
+          <Badge variant="outline" className="text-[10px] font-mono">
+            {provider}
+          </Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        disabled={disabled}
+        onClick={() => onChange(!enabled)}
+        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+          enabled ? "bg-primary" : "bg-muted"
+        }`}
+      >
+        <span
+          className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ease-in-out ${
+            enabled ? "translate-x-5" : "translate-x-0"
+          }`}
+        />
+      </button>
     </div>
   );
 }

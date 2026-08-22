@@ -12,6 +12,7 @@ use tower::ServiceExt;
 
 use controlplane_dashboard_api::router::{dashboard_router, DashboardState};
 use controlplane_dashboard_api::sse::SseBroadcaster;
+use controlplane_dashboard_api::in_memory_store::InMemoryVerdictStore;
 
 async fn get_pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
@@ -23,8 +24,9 @@ async fn get_pool() -> Option<PgPool> {
 
 fn make_app(pool: PgPool) -> axum::Router {
     let state = DashboardState {
-        pool,
+        pool: Some(pool),
         broadcaster: SseBroadcaster::new(128),
+        in_memory: InMemoryVerdictStore::new(),
     };
     dashboard_router(state)
 }

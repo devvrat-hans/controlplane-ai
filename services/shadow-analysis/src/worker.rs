@@ -10,6 +10,7 @@ use controlplane_platform::messaging::{EventPublisher, EventSubscriber};
 
 use crate::bias::BiasClassifier;
 use crate::groundedness::GroundednessChecker;
+use crate::guardrails_client::GuardrailsClient;
 use crate::semantic_pii::SemanticPiiDetector;
 use crate::types::{ShadowConfig, ShadowVerdict};
 use crate::verbosity::VerbosityChecker;
@@ -149,6 +150,45 @@ async fn process_message(
         detector.check(&response_clone)
     });
 
+    // Run guardrails sidecar checks on RESPONSE (Presidio PII + LLM Guard Toxicity/Bias)
+    let guardrails_pii_handle = if config.pii_enabled {
+        if let Some(ref url) = config.guardrails_url {
+            let client = GuardrailsClient::new(url);
+            let text = response_text.clone();
+            Some(tokio::spawn(async move { client.scan_pii(&text).await }))
+        } else { None }
+    } else { None };
+
+    let guardrails_toxicity_handle = if config.toxicity_enabled {
+        if let Some(ref url) = config.guardrails_url {
+            let client = GuardrailsClient::new(url);
+            let text = response_text.clone();
+            let prompt = prompt_text.clone();
+            Some(tokio::spawn(async move { client.scan_toxicity(&text, Some(&prompt)).await }))
+        } else { None }
+    } else { None };
+
+    // Bias on response text produces too many false positives (opinionated != biased).
+    // Only scan inputs for bias; response bias is caught by the input_bias_handle below.
+    let guardrails_bias_handle: Option<tokio::task::JoinHandle<Option<ShadowVerdict>>> = None;
+
+    // Also scan the INPUT prompt for toxicity/bias (catches inappropriate prompts)
+    let input_toxicity_handle = if config.toxicity_enabled && !prompt_text.is_empty() {
+        if let Some(ref url) = config.guardrails_url {
+            let client = GuardrailsClient::new(url);
+            let text = prompt_text.clone();
+            Some(tokio::spawn(async move { client.scan_toxicity(&text, None).await }))
+        } else { None }
+    } else { None };
+
+    let input_bias_handle = if config.bias_enabled && !prompt_text.is_empty() {
+        if let Some(ref url) = config.guardrails_url {
+            let client = GuardrailsClient::new(url);
+            let text = prompt_text.clone();
+            Some(tokio::spawn(async move { client.scan_bias(&text, None).await }))
+        } else { None }
+    } else { None };
+
     // Collect all results
     let mut verdicts: Vec<ShadowVerdict> = Vec::new();
 
@@ -172,6 +212,42 @@ async fn process_message(
 
     if let Ok(result) = semantic_pii_handle.await {
         if let Some(v) = result.verdict {
+            verdicts.push(v);
+        }
+    }
+
+    // Collect guardrails sidecar results
+    if let Some(handle) = guardrails_pii_handle {
+        if let Ok(Some(v)) = handle.await {
+            verdicts.push(v);
+        }
+    }
+
+    if let Some(handle) = guardrails_toxicity_handle {
+        if let Ok(Some(v)) = handle.await {
+            verdicts.push(v);
+        }
+    }
+
+    if let Some(handle) = guardrails_bias_handle {
+        if let Ok(Some(v)) = handle.await {
+            verdicts.push(v);
+        }
+    }
+
+    // Collect input-side guardrails results (rename check for clarity)
+    if let Some(handle) = input_toxicity_handle {
+        if let Ok(Some(mut v)) = handle.await {
+            v.check_name = "input-toxicity".to_string();
+            v.reason = format!("Input: {}", v.reason);
+            verdicts.push(v);
+        }
+    }
+
+    if let Some(handle) = input_bias_handle {
+        if let Ok(Some(mut v)) = handle.await {
+            v.check_name = "input-bias".to_string();
+            v.reason = format!("Input: {}", v.reason);
             verdicts.push(v);
         }
     }

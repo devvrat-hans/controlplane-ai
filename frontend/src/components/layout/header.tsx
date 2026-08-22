@@ -151,23 +151,30 @@ function DropdownItem({
 }: {
   icon: React.ReactNode;
   label: string;
-  href: string;
+  href?: string;
   onClick?: () => void;
   danger?: boolean;
 }) {
+  const classes = `flex items-center gap-2.5 px-3.5 py-2 text-[13px] w-full transition-colors ${
+    danger
+      ? "text-[#ee0000] hover:bg-[#ee0000]/5"
+      : "text-foreground hover:bg-accent"
+  }`;
+
+  if (href) {
+    return (
+      <Link href={href} onClick={onClick} className={classes}>
+        <span className="w-4 h-4 shrink-0 opacity-70">{icon}</span>
+        {label}
+      </Link>
+    );
+  }
+
   return (
-    <Link
-      href={href}
-      onClick={onClick}
-      className={`flex items-center gap-2.5 px-3.5 py-2 text-[13px] transition-colors ${
-        danger
-          ? "text-[#ee0000] hover:bg-[#ee0000]/5"
-          : "text-foreground hover:bg-accent"
-      }`}
-    >
+    <button onClick={onClick} className={classes}>
       <span className="w-4 h-4 shrink-0 opacity-70">{icon}</span>
       {label}
-    </Link>
+    </button>
   );
 }
 
