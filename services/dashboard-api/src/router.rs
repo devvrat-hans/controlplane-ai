@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::{get, put};
+use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,7 @@ struct AxisCount {
 struct AppRow {
     id: Uuid,
     name: String,
-    team_id: Uuid,
+    team_id: Option<Uuid>,
     created_at: DateTime<Utc>,
 }
 

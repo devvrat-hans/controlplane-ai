@@ -48,9 +48,10 @@ describe("Header", () => {
     expect(screen.getByText("AD")).toBeInTheDocument();
   });
 
-  it("renders user name and email", () => {
+  it("renders user name and role", () => {
+    sessionStorage.setItem("cp-user", JSON.stringify({ email: "admin@controlplane.ai", role: "admin" }));
     renderWithProviders(<Header />);
     expect(screen.getByText("Admin")).toBeInTheDocument();
-    expect(screen.getByText("admin@demo.local")).toBeInTheDocument();
+    expect(screen.getByText("admin")).toBeInTheDocument();
   });
 });

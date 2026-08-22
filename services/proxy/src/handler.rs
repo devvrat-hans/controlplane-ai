@@ -121,6 +121,43 @@ pub async fn proxy_handler(
         response_body.clone()
     };
 
+    // Publish verdicts to SSE (for all outcomes including pass/block)
+    let publisher_for_verdicts = state.publisher.clone();
+    let verdicts_for_stream: Vec<Verdict> = if fast_path_result.verdicts.is_empty() {
+        vec![Verdict::new(
+            correlation_id,
+            controlplane_common::types::Axis::Responsibility,
+            VerdictPath::Fast,
+            fast_path_result.outcome,
+            1.0,
+            match fast_path_result.outcome {
+                Outcome::Pass => "All checks passed",
+                Outcome::Block => fast_path_result.block_reason.as_deref().unwrap_or("Blocked"),
+                _ => "Processed",
+            },
+            "fast-path-summary",
+        ).with_duration(fast_path_latency_ms)]
+    } else {
+        fast_path_result.verdicts.clone()
+    };
+
+    tokio::spawn({
+        let verdicts = verdicts_for_stream;
+        async move {
+            for verdict in verdicts {
+                let envelope = EventEnvelope::new(
+                    subjects::VERDICT_FAST,
+                    correlation_id,
+                    Uuid::nil(),
+                    VerdictPayload { verdict },
+                );
+                if let Ok(bytes) = envelope.to_bytes() {
+                    let _ = publisher_for_verdicts.publish(subjects::VERDICT_FAST, &bytes).await;
+                }
+            }
+        }
+    });
+
     // Check if blocked
     if fast_path_result.outcome == Outcome::Block {
         info!(
@@ -137,7 +174,6 @@ pub async fn proxy_handler(
             }
         });
 
-        // Still publish for audit purposes
         publish_call_async(
             &state.publisher, correlation_id, &request_body, &response_body,
             input_tokens, output_tokens, upstream_latency_ms, fast_path_latency_ms,
@@ -152,7 +188,6 @@ pub async fn proxy_handler(
     let resp_body_clone = response_body.clone();
 
     tokio::spawn(async move {
-        // Publish shadow analysis request
         let shadow_req = ShadowAnalysisRequest {
             call_id: correlation_id,
             request_payload: serde_json::from_slice(&req_body_clone).ok(),
@@ -164,27 +199,13 @@ pub async fn proxy_handler(
         let envelope = EventEnvelope::new(
             subjects::INTERCEPT_SHADOW,
             correlation_id,
-            Uuid::nil(), // app_id resolved later
+            Uuid::nil(),
             shadow_req,
         );
 
         if let Ok(bytes) = envelope.to_bytes() {
             if let Err(e) = publisher.publish(subjects::INTERCEPT_SHADOW, &bytes).await {
                 warn!(error = %e, "Failed to publish shadow analysis request");
-            }
-        }
-
-        // Publish fast-path verdicts
-        for verdict in fast_path_result.verdicts {
-            let envelope = EventEnvelope::new(
-                subjects::VERDICT_FAST,
-                correlation_id,
-                Uuid::nil(),
-                VerdictPayload { verdict },
-            );
-
-            if let Ok(bytes) = envelope.to_bytes() {
-                let _ = publisher.publish(subjects::VERDICT_FAST, &bytes).await;
             }
         }
     });

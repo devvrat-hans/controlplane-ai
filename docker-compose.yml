@@ -1,0 +1,96 @@
+# Full-stack docker-compose for ControlPlane.ai
+# Usage: docker compose up --build
+#
+# This starts all services: PostgreSQL, NATS, mock upstream, gateway, and frontend.
+# After startup, open http://localhost:3000 for the dashboard.
+
+services:
+  # --- Infrastructure ---
+  postgres:
+    image: postgres:16-alpine
+    container_name: controlplane-postgres
+    environment:
+      POSTGRES_USER: controlplane
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: controlplane
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U controlplane"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: controlplane-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Mock AI Upstream ---
+  mock-upstream:
+    image: python:3.11-alpine
+    container_name: controlplane-mock-upstream
+    working_dir: /app
+    volumes:
+      - ./scripts/mock_upstream.py:/app/mock_upstream.py:ro
+    command: ["python", "mock_upstream.py", "9999"]
+    ports:
+      - "9999:9999"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:9999/v1/messages', data=b'{}', headers={'Content-Type':'application/json'}))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # --- Rust Gateway (Proxy + Dashboard API) ---
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: controlplane-gateway
+    environment:
+      DATABASE_URL: postgres://controlplane:secret@postgres:5432/controlplane
+      NATS_URL: nats://nats:4222
+      EVENT_BUS: inproc
+      PROXY_LISTEN_ADDR: 0.0.0.0:8900
+      DASHBOARD_API_PORT: "8081"
+      UPSTREAM_BASE_URL: http://mock-upstream:9999
+      UPSTREAM_API_KEY: ""
+      JWT_SECRET: change-me-in-production
+      RUST_LOG: controlplane=info,tower_http=info
+    ports:
+      - "8900:8900"
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-upstream:
+        condition: service_started
+
+  # --- Next.js Frontend ---
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: controlplane-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8081
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gateway
+
+volumes:
+  pgdata:
