@@ -92,9 +92,9 @@ export default function LiveStreamPage() {
       <div className="space-y-4">
         {/* Header with controls */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight">Live Stream</h2>
-            <p className="text-muted-foreground">
+          <div className="space-y-1">
+            <h1 className="text-[24px] font-semibold tracking-tighter-brand">Live Stream.</h1>
+            <p className="text-[14px] text-muted-foreground tracking-tight-brand">
               Real-time verdict feed from the proxy.
             </p>
           </div>
@@ -274,20 +274,20 @@ function VerdictRow({
 
 function OutcomeDot({ outcome }: { outcome: string }) {
   const colors: Record<string, string> = {
-    pass: "bg-green-500",
-    edit: "bg-yellow-500",
-    block: "bg-red-500",
-    escalate: "bg-orange-500",
+    pass: "bg-[#0070f3]",
+    edit: "bg-[#f5a623]",
+    block: "bg-[#ee0000]",
+    escalate: "bg-[#7928ca]",
   };
-  return <div className={`h-2.5 w-2.5 rounded-full shrink-0 ${colors[outcome] ?? "bg-gray-500"}`} />;
+  return <div className={`h-2.5 w-2.5 rounded-full shrink-0 ${colors[outcome] ?? "bg-[#888888]"}`} />;
 }
 
 function OutcomeBadge({ outcome }: { outcome: string }) {
   const styles: Record<string, string> = {
-    pass: "bg-green-500/10 text-green-500 border-green-500/20",
-    edit: "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
-    block: "bg-red-500/10 text-red-500 border-red-500/20",
-    escalate: "bg-orange-500/10 text-orange-500 border-orange-500/20",
+    pass: "bg-[#0070f3]/10 text-[#0070f3] border-[#0070f3]/20",
+    edit: "bg-[#f5a623]/10 text-[#ab570a] border-[#f5a623]/20",
+    block: "bg-[#ee0000]/10 text-[#ee0000] border-[#ee0000]/20",
+    escalate: "bg-[#7928ca]/10 text-[#7928ca] border-[#7928ca]/20",
   };
   return (
     <Badge className={`text-[10px] capitalize ${styles[outcome] ?? ""}`}>
@@ -309,12 +309,14 @@ function FilterGroup({
 }) {
   return (
     <div className="flex items-center gap-1">
-      <span className="text-xs text-muted-foreground mr-1">{label}:</span>
+      <span className="text-[11px] text-muted-foreground font-mono uppercase tracking-wider mr-1">
+        {label}
+      </span>
       {options.map((opt) => (
         <button
           key={opt.value}
           onClick={() => onChange(opt.value)}
-          className={`rounded-md px-2 py-1 text-xs transition-colors ${
+          className={`rounded-full px-3 py-1 text-[12px] font-medium transition-colors ${
             value === opt.value
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-accent"

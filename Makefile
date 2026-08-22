@@ -1,5 +1,12 @@
 .PHONY: help build check test fmt clippy infra-up infra-down migrate seed frontend-dev demo verify clean
 
+# Detect docker compose variant (v2 plugin or v1 standalone)
+ifeq ($(shell docker compose version 2>/dev/null),)
+  DC := docker-compose
+else
+  DC := docker compose
+endif
+
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
@@ -23,13 +30,13 @@ clippy: ## Run clippy lints
 # --- Infrastructure ----------------------------------------------------------
 
 infra-up: ## Start PostgreSQL + NATS (Docker)
-	docker compose -f infra/docker-compose.yml up -d
+	$(DC) -f infra/docker-compose.yml up -d
 
 infra-down: ## Stop infrastructure containers
-	docker compose -f infra/docker-compose.yml down
+	$(DC) -f infra/docker-compose.yml down
 
 infra-reset: ## Stop containers and remove volumes
-	docker compose -f infra/docker-compose.yml down -v
+	$(DC) -f infra/docker-compose.yml down -v
 
 migrate: ## Run database migrations
 	bash infra/migrate.sh

@@ -13,6 +13,13 @@ info()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 step()  { echo -e "\n${BOLD}→ $1${NC}"; }
 
+# Detect docker compose variant (v2 plugin or v1 standalone)
+if docker compose version >/dev/null 2>&1; then
+    DC="docker compose"
+else
+    DC="docker-compose"
+fi
+
 echo -e "${BOLD}╔══════════════════════════════════════╗${NC}"
 echo -e "${BOLD}║    ControlPlane.ai — Demo Runner     ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════╝${NC}"
@@ -28,7 +35,7 @@ fi
 
 if command -v docker >/dev/null 2>&1; then
     step "Ensuring infrastructure is running"
-    docker compose -f infra/docker-compose.yml up -d
+    $DC -f infra/docker-compose.yml up -d
     sleep 2
     info "Infrastructure ready"
 fi

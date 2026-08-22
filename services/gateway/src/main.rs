@@ -12,8 +12,9 @@ use controlplane_platform::messaging::{InProcessBus, NatsBus};
 use controlplane_fast_path::{FastPathEngine, FastPathRuleSet, PolicyCache};
 use controlplane_proxy::proxy_router;
 use controlplane_proxy::handler::ProxyState;
+use controlplane_common::create_provider;
 
-use controlplane_dashboard_api::{dashboard_router, spawn_sse_bridge, DashboardState, SseBroadcaster};
+use controlplane_dashboard_api::{dashboard_router, spawn_sse_bridge, DashboardState, InMemoryVerdictStore, SseBroadcaster};
 use controlplane_shadow_analysis::{ShadowConfig, ShadowWorker};
 use controlplane_cost_accounting::spawn_cost_tracker;
 use controlplane_escalation::spawn_escalation_listener;
@@ -40,6 +41,7 @@ async fn main() -> Result<()> {
         proxy_addr = %config.proxy_listen_addr,
         api_port = config.dashboard_api_port,
         upstream = %config.upstream_base_url,
+        provider = %config.upstream_provider,
         event_bus = ?config.event_bus,
         "Configuration loaded"
     );
@@ -87,9 +89,16 @@ async fn main() -> Result<()> {
     let fast_path_engine = Arc::new(FastPathEngine::new(policy_cache));
     info!("Fast-path engine initialized");
 
+    // ─── Provider ────────────────────────────────────────────────────────
+    let provider = create_provider(config.upstream_provider);
+    info!(provider = %config.upstream_provider, "Upstream provider initialized");
+
     // ─── Proxy Server ────────────────────────────────────────────────────
     let proxy_state = Arc::new(ProxyState {
         upstream_base_url: config.upstream_base_url.clone(),
+        upstream_api_key: config.upstream_api_key.clone(),
+        default_model: config.upstream_model.clone(),
+        provider,
         http_client: reqwest::Client::new(),
         fast_path: fast_path_engine.clone(),
         publisher: publisher.clone(),
@@ -110,15 +119,21 @@ async fn main() -> Result<()> {
 
     // ─── Dashboard API Server ────────────────────────────────────────────
     let broadcaster = SseBroadcaster::new(1024);
-    spawn_sse_bridge(broadcaster.clone(), subscriber.clone(), shutdown_rx.clone());
+    let verdict_store = InMemoryVerdictStore::new();
+    spawn_sse_bridge(
+        broadcaster.clone(),
+        subscriber.clone(),
+        shutdown_rx.clone(),
+        Some(verdict_store.clone()),
+    );
 
-    let api_handle = if let Some(ref db_pool) = pool {
-        let dashboard_state = DashboardState {
-            pool: db_pool.clone(),
-            broadcaster: broadcaster.clone(),
-        };
-        let dashboard_app = dashboard_router(dashboard_state);
-        let api_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.dashboard_api_port).parse()?;
+    let dashboard_state = DashboardState {
+        pool: pool.clone(),
+        broadcaster: broadcaster.clone(),
+        in_memory: verdict_store,
+    };
+    let dashboard_app = dashboard_router(dashboard_state);
+    let api_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.dashboard_api_port).parse()?;
 
         let api_shutdown = shutdown_rx.clone();
         Some(tokio::spawn(async move {
@@ -137,10 +152,14 @@ async fn main() -> Result<()> {
     // ─── Background Workers ──────────────────────────────────────────────
 
     // Shadow analysis worker
+    let shadow_config = ShadowConfig {
+        provider: config.upstream_provider,
+        ..ShadowConfig::default()
+    };
     let shadow_worker = ShadowWorker::new(
         subscriber.clone(),
         publisher.clone(),
-        ShadowConfig::default(),
+        shadow_config,
     );
     let shadow_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
@@ -205,3 +224,5 @@ async fn shutdown_signal(mut rx: watch::Receiver<bool>) {
         }
     }
 }
+
+

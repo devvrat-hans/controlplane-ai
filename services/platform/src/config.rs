@@ -1,11 +1,16 @@
 use serde::Deserialize;
 
+use controlplane_common::provider::ProviderKind;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub database_url: String,
     pub nats_url: Option<String>,
     pub proxy_listen_addr: String,
     pub upstream_base_url: String,
+    pub upstream_api_key: String,
+    pub upstream_provider: ProviderKind,
+    pub upstream_model: String,
     pub dashboard_api_port: u16,
     pub jwt_secret: String,
     pub event_bus: EventBusMode,
@@ -24,13 +29,37 @@ impl AppConfig {
     pub fn from_env() -> Result<Self, anyhow::Error> {
         dotenvy::dotenv().ok();
 
+        let upstream_provider = std::env::var("UPSTREAM_PROVIDER")
+            .unwrap_or_else(|_| "anthropic".into())
+            .parse::<ProviderKind>()
+            .unwrap_or(ProviderKind::Anthropic);
+
+        // Auto-detect upstream base URL based on provider if not explicitly set
+        let upstream_base_url = std::env::var("UPSTREAM_BASE_URL").ok().unwrap_or_else(|| {
+            match upstream_provider {
+                ProviderKind::Anthropic => "https://api.anthropic.com".to_string(),
+                ProviderKind::Gemini => "https://generativelanguage.googleapis.com".to_string(),
+            }
+        });
+
+        let upstream_api_key = std::env::var("UPSTREAM_API_KEY")
+            .unwrap_or_default();
+
+        let upstream_model = std::env::var("UPSTREAM_MODEL")
+            .unwrap_or_else(|_| match upstream_provider {
+                ProviderKind::Anthropic => "claude-sonnet-4-20250514".to_string(),
+                ProviderKind::Gemini => "gemini-2.0-flash".to_string(),
+            });
+
         Ok(Self {
             database_url: std::env::var("DATABASE_URL").unwrap_or_default(),
             nats_url: std::env::var("NATS_URL").ok(),
             proxy_listen_addr: std::env::var("PROXY_LISTEN_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:8900".into()),
-            upstream_base_url: std::env::var("UPSTREAM_BASE_URL")
-                .unwrap_or_else(|_| "https://api.anthropic.com".into()),
+            upstream_base_url,
+            upstream_api_key,
+            upstream_provider,
+            upstream_model,
             dashboard_api_port: std::env::var("DASHBOARD_API_PORT")
                 .unwrap_or_else(|_| "8080".into())
                 .parse()?,

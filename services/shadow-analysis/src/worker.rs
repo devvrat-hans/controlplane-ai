@@ -4,6 +4,7 @@ use tracing::{debug, error, info, warn};
 
 use controlplane_common::events::{subjects, EventEnvelope, ShadowAnalysisRequest, VerdictPayload};
 use controlplane_common::models::Verdict;
+use controlplane_common::{create_provider, provider::UpstreamProvider};
 use controlplane_common::types::{Outcome, Path as VerdictPath};
 use controlplane_platform::messaging::{EventPublisher, EventSubscriber};
 
@@ -88,19 +89,31 @@ async fn process_message(
 
     debug!(correlation_id = %correlation_id, "Processing shadow analysis");
 
+    // Build the appropriate provider for parsing
+    let provider: Box<dyn UpstreamProvider> = create_provider(config.provider);
+
     let response_text = request.response_payload
         .as_ref()
-        .and_then(|v| extract_text_from_payload(v))
+        .and_then(|v| {
+            let bytes = serde_json::to_vec(v).ok()?;
+            provider.extract_response_text(&bytes)
+        })
         .unwrap_or_default();
 
     let prompt_text = request.request_payload
         .as_ref()
-        .and_then(|v| extract_prompt_from_payload(v))
+        .and_then(|v| {
+            let bytes = serde_json::to_vec(v).ok()?;
+            provider.extract_request_prompt(&bytes)
+        })
         .unwrap_or_default();
 
     let context_text = request.request_payload
         .as_ref()
-        .and_then(|v| extract_context_from_payload(v));
+        .and_then(|v| {
+            let bytes = serde_json::to_vec(v).ok()?;
+            provider.extract_context(&bytes)
+        });
 
     // Run all checks in parallel
     let config_clone = config.clone();
@@ -207,127 +220,4 @@ async fn process_message(
     );
 }
 
-/// Extract the text content from an Anthropic-style response payload.
-fn extract_text_from_payload(value: &serde_json::Value) -> Option<String> {
-    // Anthropic format: { "content": [{ "type": "text", "text": "..." }] }
-    if let Some(content) = value.get("content").and_then(|c| c.as_array()) {
-        let texts: Vec<&str> = content.iter()
-            .filter_map(|block| {
-                if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                    block.get("text").and_then(|t| t.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !texts.is_empty() {
-            return Some(texts.join("\n"));
-        }
-    }
 
-    // Fallback: look for a top-level "text" field
-    if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
-        return Some(text.to_string());
-    }
-
-    // Fallback: stringify the whole thing
-    Some(value.to_string())
-}
-
-/// Extract the user's prompt from a request payload.
-fn extract_prompt_from_payload(value: &serde_json::Value) -> Option<String> {
-    // Anthropic format: { "messages": [{ "role": "user", "content": "..." }] }
-    if let Some(messages) = value.get("messages").and_then(|m| m.as_array()) {
-        let user_msgs: Vec<&str> = messages.iter()
-            .filter_map(|msg| {
-                if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-                    msg.get("content").and_then(|c| c.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !user_msgs.is_empty() {
-            return Some(user_msgs.join("\n"));
-        }
-    }
-
-    None
-}
-
-/// Extract RAG context from a request payload (if present).
-fn extract_context_from_payload(value: &serde_json::Value) -> Option<String> {
-    // Look for system message (often contains RAG context)
-    if let Some(system) = value.get("system").and_then(|s| s.as_str()) {
-        return Some(system.to_string());
-    }
-
-    // Look in messages for system role
-    if let Some(messages) = value.get("messages").and_then(|m| m.as_array()) {
-        let system_msgs: Vec<&str> = messages.iter()
-            .filter_map(|msg| {
-                if msg.get("role").and_then(|r| r.as_str()) == Some("system") {
-                    msg.get("content").and_then(|c| c.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !system_msgs.is_empty() {
-            return Some(system_msgs.join("\n"));
-        }
-    }
-
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extracts_text_from_anthropic_response() {
-        let payload = serde_json::json!({
-            "content": [
-                {"type": "text", "text": "Hello, world!"},
-                {"type": "text", "text": "Second block."}
-            ]
-        });
-        let text = extract_text_from_payload(&payload).unwrap();
-        assert!(text.contains("Hello, world!"));
-        assert!(text.contains("Second block."));
-    }
-
-    #[test]
-    fn extracts_prompt_from_anthropic_request() {
-        let payload = serde_json::json!({
-            "messages": [
-                {"role": "user", "content": "What is the capital of France?"},
-                {"role": "assistant", "content": "Paris."},
-                {"role": "user", "content": "And Germany?"}
-            ]
-        });
-        let prompt = extract_prompt_from_payload(&payload).unwrap();
-        assert!(prompt.contains("France"));
-        assert!(prompt.contains("Germany"));
-    }
-
-    #[test]
-    fn extracts_context_from_system_field() {
-        let payload = serde_json::json!({
-            "system": "You are a helpful assistant. Context: Paris is the capital of France.",
-            "messages": [{"role": "user", "content": "What is the capital?"}]
-        });
-        let context = extract_context_from_payload(&payload).unwrap();
-        assert!(context.contains("Paris"));
-    }
-
-    #[test]
-    fn returns_none_when_no_context() {
-        let payload = serde_json::json!({
-            "messages": [{"role": "user", "content": "Hi"}]
-        });
-        let context = extract_context_from_payload(&payload);
-        assert!(context.is_none());
-    }
-}

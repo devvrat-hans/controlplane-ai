@@ -1,3 +1,4 @@
+use controlplane_common::provider::ProviderKind;
 use controlplane_common::types::{Axis, Outcome};
 
 /// A verdict produced by a shadow-path check.
@@ -20,6 +21,7 @@ pub struct ShadowConfig {
     pub verbosity_min_density: f32,
     pub semantic_pii_min_identifiers: usize,
     pub semantic_pii_risk_threshold: f32,
+    pub provider: ProviderKind,
 }
 
 impl Default for ShadowConfig {
@@ -31,6 +33,7 @@ impl Default for ShadowConfig {
             verbosity_min_density: 0.3,
             semantic_pii_min_identifiers: 3,
             semantic_pii_risk_threshold: 0.5,
+            provider: ProviderKind::Anthropic,
         }
     }
 }

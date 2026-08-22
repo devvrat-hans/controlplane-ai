@@ -21,10 +21,10 @@ import { getStatsOverview, getRecentVerdicts } from "@/lib/api";
 import type { StatsOverview, VerdictRow } from "@/lib/api";
 
 const OUTCOME_COLORS: Record<string, string> = {
-  pass: "#22c55e",
-  edit: "#eab308",
-  block: "#ef4444",
-  escalate: "#f97316",
+  pass: "#0070f3",
+  edit: "#f5a623",
+  block: "#ee0000",
+  escalate: "#7928ca",
 };
 
 export default function OverviewPage() {
@@ -47,9 +47,9 @@ export default function OverviewPage() {
   return (
     <DashboardShell>
       <div className="space-y-8">
-        <div>
-          <h2 className="text-[24px] font-semibold tracking-tighter-brand">Overview</h2>
-          <p className="text-[14px] text-muted-foreground mt-1">
+        <div className="space-y-1">
+          <h1 className="text-[24px] font-semibold tracking-tighter-brand">Overview.</h1>
+          <p className="text-[14px] text-muted-foreground tracking-tight-brand">
             Real-time view of your AI governance layer.
           </p>
         </div>
@@ -165,7 +165,7 @@ function StatCard({
       : variant === "warning"
         ? "text-[#f5a623]"
         : variant === "success"
-          ? "text-emerald-600 dark:text-emerald-400"
+          ? "text-[#50e3c2]"
           : "text-foreground";
 
   return (

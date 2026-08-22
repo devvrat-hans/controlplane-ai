@@ -10,6 +10,8 @@ use tracing::{info, warn};
 use controlplane_common::events::{EventEnvelope, VerdictPayload};
 use controlplane_platform::messaging::EventSubscriber;
 
+use crate::in_memory_store::{InMemoryVerdictStore, VerdictRecord};
+
 /// Shared state for SSE broadcasting.
 /// Receives verdicts from NATS and broadcasts to all connected SSE clients.
 #[derive(Clone)]
@@ -39,6 +41,7 @@ pub fn spawn_sse_bridge(
     broadcaster: SseBroadcaster,
     subscriber: Arc<dyn EventSubscriber>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    verdict_store: Option<InMemoryVerdictStore>,
 ) {
     tokio::spawn(async move {
         let mut receiver = match subscriber.subscribe("controlplane.verdict.*").await {
@@ -74,6 +77,23 @@ pub fn spawn_sse_bridge(
                                     }
                                 });
                                 broadcaster.publish(event.to_string());
+
+                                // Also store in memory for the dashboard API
+                                if let Some(ref store) = verdict_store {
+                                    store.push(VerdictRecord {
+                                        id: envelope.payload.verdict.id.to_string(),
+                                        call_id: envelope.payload.verdict.call_id.to_string(),
+                                        app_id: Some(envelope.app_id.to_string()),
+                                        axis: envelope.payload.verdict.axis.as_str().to_string(),
+                                        path: envelope.payload.verdict.path.as_str().to_string(),
+                                        outcome: envelope.payload.verdict.outcome.as_str().to_string(),
+                                        confidence: envelope.payload.verdict.confidence,
+                                        reason: envelope.payload.verdict.reason,
+                                        check_name: envelope.payload.verdict.check_name,
+                                        latency_ms: None,
+                                        created_at: envelope.timestamp,
+                                    });
+                                }
                             }
                         }
                         None => {

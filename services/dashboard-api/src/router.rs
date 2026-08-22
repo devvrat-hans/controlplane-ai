@@ -12,6 +12,7 @@ use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::auth::auth_middleware;
+use crate::in_memory_store::InMemoryVerdictStore;
 use crate::sse::{verdict_stream_handler, SseBroadcaster};
 
 /// Shared state for the dashboard API.
@@ -19,6 +20,7 @@ use crate::sse::{verdict_stream_handler, SseBroadcaster};
 pub struct DashboardState {
     pub pool: PgPool,
     pub broadcaster: SseBroadcaster,
+    pub in_memory: InMemoryVerdictStore,
 }
 
 /// Build the full dashboard API router with CORS and auth.
@@ -118,6 +120,30 @@ async fn recent_verdicts(
     State(state): State<Arc<DashboardState>>,
     Query(params): Query<RecentVerdictsParams>,
 ) -> Result<Json<RecentVerdictsResponse>, (StatusCode, String)> {
+    // If no database, serve from in-memory ring buffer
+    if state.pool.is_none() {
+        let limit = params.limit.unwrap_or(50).min(200) as usize;
+        let app_id_str = params.app_id.map(|u| u.to_string());
+        let outcome_str = params.outcome.as_deref();
+        let records = state.in_memory.recent(limit, app_id_str.as_deref(), outcome_str);
+        let total = records.len();
+        let verdicts: Vec<VerdictRow> = records.into_iter().map(|r| VerdictRow {
+            id: uuid::Uuid::parse_str(&r.id).unwrap_or_default(),
+            call_id: uuid::Uuid::parse_str(&r.call_id).unwrap_or_default(),
+            app_id: r.app_id.as_deref().and_then(|s| uuid::Uuid::parse_str(s).ok()),
+            axis: r.axis,
+            path: r.path,
+            outcome: r.outcome,
+            confidence: r.confidence,
+            reason: r.reason,
+            check_name: r.check_name,
+            latency_ms: r.latency_ms,
+            created_at: r.created_at,
+        }).collect();
+        return Ok(Json(RecentVerdictsResponse { verdicts, total }));
+    }
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     let limit = params.limit.unwrap_or(50).min(200);
 
     let verdicts = if let Some(app_id) = params.app_id {
@@ -167,6 +193,23 @@ async fn recent_verdicts(
 async fn stats_overview(
     State(state): State<Arc<DashboardState>>,
 ) -> Result<Json<StatsOverview>, (StatusCode, String)> {
+    // If no database, compute from in-memory ring buffer
+    if state.pool.is_none() {
+        let stats = state.in_memory.overview();
+        return Ok(Json(StatsOverview {
+            total_calls_24h: stats.total_calls_24h,
+            total_verdicts_24h: stats.total_verdicts_24h,
+            blocks_24h: stats.blocks_24h,
+            escalations_24h: stats.escalations_24h,
+            passes_24h: stats.passes_24h,
+            open_escalations: stats.open_escalations,
+            avg_fast_path_latency_ms: stats.avg_fast_path_latency_ms,
+            top_blocked_axes: stats.top_blocked_axes.into_iter().map(|a| AxisCount { axis: a.axis, count: a.count }).collect(),
+        }));
+    }
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
     let now_minus_24h = Utc::now() - chrono::Duration::hours(24);
 
     let total_calls: (i64,) = sqlx::query_as(

@@ -232,6 +232,13 @@ cp .env.example .env
 The defaults work with Docker infra:
 
 ```env
+# Required — choose your provider and add an API key
+UPSTREAM_PROVIDER=anthropic          # "anthropic" or "gemini"
+UPSTREAM_API_KEY=your-api-key-here   # get from provider console
+UPSTREAM_MODEL=claude-sonnet-4-20250514  # model to use (provider defaults if omitted)
+# UPSTREAM_BASE_URL is auto-detected from provider, but you can override
+
+# Database (matches docker-compose defaults)
 DATABASE_URL=postgres://controlplane:secret@localhost:5432/controlplane
 EVENT_BUS=inproc
 UPSTREAM_BASE_URL=http://localhost:9999
@@ -242,7 +249,19 @@ DASHBOARD_API_PORT=8081
 #### Step 2: Start infrastructure
 
 ```bash
+# Docker Compose v2+ (compose plugin):
 docker compose -f infra/docker-compose.yml up -d
+# — OR standalone v1 binary:
+docker-compose -f infra/docker-compose.yml up -d
+```
+
+Verify both containers are healthy:
+
+```bash
+docker compose -f infra/docker-compose.yml ps   # v2
+# — OR —
+docker-compose -f infra/docker-compose.yml ps   # v1 standalone
+# Should show: controlplane-postgres (healthy), controlplane-nats (healthy)
 ```
 
 #### Step 3: Run database migrations
@@ -449,9 +468,13 @@ Run all scenarios automatically with narration:
 docker compose down          # Stop all containers
 docker compose down -v       # Stop + delete data
 
-# Local mode:
-# Ctrl+C in each terminal (gateway, frontend, mock upstream)
-# Then: docker compose -f infra/docker-compose.yml down
+# If running manually:
+# Terminal 1: Ctrl+C the gateway
+# Terminal 2: Ctrl+C the frontend (pnpm dev)
+# Then stop Docker:
+docker compose -f infra/docker-compose.yml down    # v2
+# — OR —
+docker-compose -f infra/docker-compose.yml down    # v1 standalone
 ```
 
 ---
@@ -465,10 +488,12 @@ docker compose down -v       # Stop + delete data
 | Port 5432 in use | Another PostgreSQL running? Stop it or use Docker (maps to 5433) |
 | Port 8900/8081 in use | Kill conflicting process or change in `.env` |
 | `psql` not found | Install PostgreSQL client: `brew install libpq` / `choco install postgresql` |
-| Frontend shows "Disconnected" | Gateway isn't running or can't reach PostgreSQL |
-| No verdicts in Live Stream | Send a request through the proxy first |
-| Gateway panics on start | Check `.env` — ensure `DATABASE_URL` points to a running PostgreSQL |
-| Migrations fail | Ensure PostgreSQL is running: `docker exec controlplane-postgres pg_isready` |
+| Docker not starting | Ensure Docker Desktop is running, then `docker compose up -d` |
+| `docker compose` not found | Use `docker-compose` (hyphen) if you have the standalone v1 binary, not the v2 plugin |
+| Frontend blank page | Check browser console; ensure API is running on :8080 |
+| No verdicts in stream | Send a request through the proxy first: `curl -X POST http://localhost:8900/v1/messages ...` |
+| Gateway panics on start | Check `.env` exists and `DATABASE_URL` is correct (or empty for in-memory mode) |
+| Migrations fail | Ensure PostgreSQL is accepting connections: `docker exec controlplane-postgres pg_isready` |
 
 ---
 
