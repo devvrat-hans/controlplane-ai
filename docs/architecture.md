@@ -24,23 +24,24 @@ NATS in production.
    │              ├─ Captures request + response
    │              ├─ Generates correlation_id
    │              ├─ Runs fast-path checks (in-process, <10ms)
-   │              │    ├─ Secret/PII regex + entropy   [SCAFFOLD]
-   │              │    ├─ Cost cap enforcement         [SCAFFOLD]
-   │              │    ├─ Retry/loop detection         [SCAFFOLD]
-   │              │    └─ Unsafe content keywords      [SCAFFOLD]
+   │              │    ├─ Secret/PII regex + entropy   [IMPLEMENTED]
+   │              │    ├─ Cost cap enforcement         [IMPLEMENTED]
+   │              │    ├─ Retry/loop detection         [IMPLEMENTED]
+   │              │    └─ Unsafe content keywords      [IMPLEMENTED]
    │              │
    │              └─ Publishes to shadow path (in-process or NATS)
    │
    ├─ Shadow-path worker (embedded or separate process)
-   │    ├─ Groundedness scoring                       [SCAFFOLD]
-   │    ├─ Bias classifier (ONNX, in-process)         [SCAFFOLD]
-   │    └─ Verbosity heuristic                        [SCAFFOLD]
+   │    ├─ Prompt injection detection (3-layer)       [IMPLEMENTED]
+   │    ├─ Groundedness scoring                       [IMPLEMENTED]
+   │    ├─ Bias classifier (guardrails sidecar)       [IMPLEMENTED]
+   │    └─ Verbosity heuristic                        [IMPLEMENTED]
    │
-   ├─ Decision engine (verdict aggregation + policy)  [SCAFFOLD]
-   ├─ Audit service (hash-chained, append-only)       [SCAFFOLD]
-   ├─ Cost accounting (token tracking)                [SCAFFOLD]
-   ├─ Escalation queue                                [SCAFFOLD]
-   └─ Notification (Slack/webhook)                    [SCAFFOLD]
+   ├─ Decision engine (verdict aggregation + policy)  [IMPLEMENTED]
+   ├─ Audit service (hash-chained, append-only)       [IMPLEMENTED]
+   ├─ Cost accounting (token tracking)                [IMPLEMENTED]
+   ├─ Escalation queue                                [IMPLEMENTED]
+   └─ Notification (Slack/webhook)                    [IMPLEMENTED]
 
  Persistence: PostgreSQL via sqlx (or in-memory for zero-dep demo) [IMPLEMENTED]
  Messaging: in-process broker or NATS (same envelopes)             [IMPLEMENTED]

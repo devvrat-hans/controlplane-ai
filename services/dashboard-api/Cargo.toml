@@ -10,10 +10,6 @@ authors.workspace = true
 [dependencies]
 controlplane-common = { workspace = true }
 controlplane-platform = { workspace = true }
-controlplane-decision = { workspace = true }
-controlplane-audit = { workspace = true }
-controlplane-cost-accounting = { workspace = true }
-controlplane-escalation = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }

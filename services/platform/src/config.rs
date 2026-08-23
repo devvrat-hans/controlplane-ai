@@ -30,9 +30,9 @@ impl AppConfig {
         dotenvy::dotenv().ok();
 
         let upstream_provider = std::env::var("UPSTREAM_PROVIDER")
-            .unwrap_or_else(|_| "anthropic".into())
+            .unwrap_or_else(|_| "ollama".into())
             .parse::<ProviderKind>()
-            .unwrap_or(ProviderKind::Anthropic);
+            .unwrap_or(ProviderKind::Ollama);
 
         // Auto-detect upstream base URL based on provider if not explicitly set
         let upstream_base_url = std::env::var("UPSTREAM_BASE_URL").ok().unwrap_or_else(|| {

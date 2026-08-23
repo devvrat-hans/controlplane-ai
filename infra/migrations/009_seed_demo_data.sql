@@ -1,13 +1,13 @@
 -- Demo seed data: users, apps, and default policies.
 -- Only run in development/demo environments.
 
--- Demo users (passwords are bcrypt hashes of "Demo#Admin2026")
+-- Demo users (client-side auth only; passwords validated in frontend, not DB)
 INSERT INTO users (id, email, password_hash, role, name) VALUES
-    ('00000000-0000-0000-0000-000000000001', 'admin@controlplane.test',
+    ('00000000-0000-0000-0000-000000000001', 'admin@controlplane.ai',
      '$argon2id$v=19$m=19456,t=2,p=1$placeholder_hash_admin', 'admin', 'Admin User'),
-    ('00000000-0000-0000-0000-000000000002', 'reviewer@controlplane.test',
+    ('00000000-0000-0000-0000-000000000002', 'reviewer@controlplane.ai',
      '$argon2id$v=19$m=19456,t=2,p=1$placeholder_hash_reviewer', 'reviewer', 'Reviewer User'),
-    ('00000000-0000-0000-0000-000000000003', 'viewer@controlplane.test',
+    ('00000000-0000-0000-0000-000000000003', 'viewer@controlplane.ai',
      '$argon2id$v=19$m=19456,t=2,p=1$placeholder_hash_viewer', 'viewer', 'Viewer User')
 ON CONFLICT (email) DO NOTHING;
 

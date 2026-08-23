@@ -21,7 +21,7 @@ pub async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "demo-secret-key-change-in-prod".to_string());
+    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-change-me".to_string());
 
     if let Some(auth_header) = request.headers().get("authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
@@ -57,7 +57,7 @@ pub fn generate_demo_token(user_id: &str, email: &str, role: &str) -> String {
         exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
     };
 
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "demo-secret-key-change-in-prod".to_string());
+    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-change-me".to_string());
     encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
         .unwrap_or_default()
 }

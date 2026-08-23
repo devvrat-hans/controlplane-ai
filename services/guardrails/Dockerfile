@@ -7,7 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Install CPU-only PyTorch first (avoids 2GB+ CUDA download), then the rest
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Download spaCy English model for Presidio NER
 RUN python -m spacy download en_core_web_lg

@@ -1,8 +1,14 @@
 # Full-stack docker-compose for ControlPlane.ai
-# Usage: docker compose up --build
 #
-# This starts all services: PostgreSQL, NATS, mock upstream, gateway, and frontend.
+# Pipeline: Client → ControlPlane Proxy → Ollama (qwen2.5:1.5b) → ControlPlane governance → Client
 # After startup, open http://localhost:3000 for the dashboard.
+#
+# Usage:
+#   CPU only:  docker compose up --build
+#   With GPU:  docker compose --profile gpu up --build
+#
+# The GPU profile uses NVIDIA CUDA. Requires nvidia-container-toolkit installed on host.
+# If no GPU is available, use the default (CPU) mode — it works out of the box.
 
 services:
   # --- Infrastructure ---
@@ -14,7 +20,7 @@ services:
       POSTGRES_PASSWORD: secret
       POSTGRES_DB: controlplane
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./infra/migrations:/docker-entrypoint-initdb.d
@@ -24,20 +30,35 @@ services:
       timeout: 5s
       retries: 5
 
-  nats:
-    image: nats:2.10-alpine
-    container_name: controlplane-nats
+  # --- Ollama LLM Provider (CPU by default, GPU via override) ---
+  # To enable NVIDIA GPU: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+  ollama:
+    image: ollama/ollama:latest
+    container_name: controlplane-ollama
     ports:
-      - "4222:4222"
-      - "8222:8222"
-    command: ["-js", "-m", "8222"]
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
 
-  # --- Python Guardrails (Presidio + LLM Guard) ---
+  # Pull the qwen2.5:1.5b model after Ollama is healthy (one-shot init container)
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: controlplane-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["sh", "-c", "ollama pull qwen2.5:1.5b"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    restart: "no"
+
+  # --- Python Guardrails Sidecar (Presidio + Toxicity + Bias) ---
   guardrails:
     build:
       context: ./services/guardrails
@@ -47,14 +68,16 @@ services:
       - "8200:8200"
     environment:
       PORT: "8200"
+      TOXICITY_THRESHOLD: "0.7"
+      BIAS_THRESHOLD: "0.66"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
       interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
-  # --- Rust Gateway (Proxy + Dashboard API) ---
+  # --- Rust Gateway (Proxy + Dashboard API + All Workers) ---
   gateway:
     build:
       context: .
@@ -62,34 +85,37 @@ services:
     container_name: controlplane-gateway
     environment:
       DATABASE_URL: postgres://controlplane:secret@postgres:5432/controlplane
-      NATS_URL: nats://nats:4222
       EVENT_BUS: inproc
       PROXY_LISTEN_ADDR: 0.0.0.0:8900
-      DASHBOARD_API_PORT: "8081"
-      UPSTREAM_PROVIDER: opencode
-      UPSTREAM_BASE_URL: https://opencode.ai
-      UPSTREAM_API_KEY: ""
-      UPSTREAM_MODEL: x-preview-f-free
+      DASHBOARD_API_PORT: "8080"
+      UPSTREAM_PROVIDER: ollama
+      UPSTREAM_BASE_URL: http://ollama:11434
+      UPSTREAM_MODEL: qwen2.5:1.5b
       GUARDRAILS_URL: http://guardrails:8200
       JWT_SECRET: change-me-in-production
+      SEED_DEMO_USERS: "true"
       RUST_LOG: controlplane=info,tower_http=info
     ports:
       - "8900:8900"
-      - "8081:8081"
+      - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
       guardrails:
-        condition: service_started
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
 
   # --- Next.js Frontend ---
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8080
     container_name: controlplane-frontend
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8081
+      NEXT_PUBLIC_API_URL: http://localhost:8080
     ports:
       - "3000:3000"
     depends_on:
@@ -97,3 +123,4 @@ services:
 
 volumes:
   pgdata:
+  ollama_models:

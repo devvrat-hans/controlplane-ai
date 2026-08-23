@@ -136,13 +136,15 @@ impl SecretDetector {
             }
         }
 
-        // Phone numbers
+        // Phone numbers — require at least one separator to avoid matching timestamps/IDs
         for cap in PHONE_RE.captures_iter(response_body) {
             if let Some(m) = cap.get(1) {
-                let digits: String = m.as_str().chars().filter(|c| c.is_ascii_digit()).collect();
-                if digits.len() >= 10 {
+                let matched = m.as_str();
+                let digits: String = matched.chars().filter(|c| c.is_ascii_digit()).collect();
+                let has_separator = matched.chars().any(|c| c == '-' || c == '.' || c == ' ' || c == '(' || c == ')');
+                if digits.len() >= 10 && has_separator {
                     findings.push(SecretFinding {
-                        matched_text: m.as_str().to_string(),
+                        matched_text: matched.to_string(),
                         category: "phone number",
                         confidence: 0.75,
                     });
@@ -324,6 +326,24 @@ mod tests {
                     Remember to drink water and stay hydrated.";
         let result = detector.check(body);
         assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn no_false_positive_on_unix_timestamps() {
+        let detector = SecretDetector::new();
+        let body = r#"{"id":"chatcmpl-566","created":1787517178,"model":"qwen2.5:1.5b"}"#;
+        let result = detector.check(body);
+        assert!(!result.findings.iter().any(|f| f.category == "phone number"),
+            "Unix timestamp should not be flagged as phone number");
+    }
+
+    #[test]
+    fn detects_phone_with_separators() {
+        let detector = SecretDetector::new();
+        let body = "Call me at +1-555-123-4567 for details.";
+        let result = detector.check(body);
+        assert!(result.findings.iter().any(|f| f.category == "phone number"),
+            "Phone number with separators should be detected");
     }
 
     #[test]

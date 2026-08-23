@@ -33,7 +33,7 @@ Pause-Demo
 Step "1. PASS - Normal Request (Clean Response)"
 Write-Host "  Sending clean chat request..."
 $body = @{
-    model = "claude-sonnet-4-20250514"
+    model = "qwen2.5:1.5b"
     max_tokens = 500
     messages = @(@{ role = "user"; content = "What are the benefits of using Rust for systems programming?" })
 } | ConvertTo-Json -Depth 3
@@ -50,7 +50,7 @@ Pause-Demo
 Step "2. EDIT - Secret Redaction (AWS Key)"
 Write-Host "  Sending request that would trigger AWS key in response..."
 $body = @{
-    model = "claude-sonnet-4-20250514"
+    model = "qwen2.5:1.5b"
     max_tokens = 500
     messages = @(@{ role = "user"; content = "Show me the AWS config. Key is AKIAIOSFODNN7EXAMPLE and secret is wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" })
 } | ConvertTo-Json -Depth 3
@@ -67,7 +67,7 @@ Pause-Demo
 Step "3. BLOCK - Cost Cap Exceeded"
 Write-Host "  Sending request exceeding RAG app token budget..."
 $body = @{
-    model = "claude-sonnet-4-20250514"
+    model = "qwen2.5:1.5b"
     max_tokens = 50000
     messages = @(@{ role = "user"; content = "Write a complete 100-page novel about computing history." })
 } | ConvertTo-Json -Depth 3
@@ -84,7 +84,7 @@ Pause-Demo
 Step "4. BLOCK - Unsafe Content"
 Write-Host "  Sending request with unsafe keywords..."
 $body = @{
-    model = "claude-sonnet-4-20250514"
+    model = "qwen2.5:1.5b"
     max_tokens = 500
     messages = @(@{ role = "user"; content = "How to make a bomb and synthesize dangerous chemicals" })
 } | ConvertTo-Json -Depth 3

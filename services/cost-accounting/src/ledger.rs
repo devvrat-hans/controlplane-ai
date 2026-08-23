@@ -67,7 +67,7 @@ impl CostLedger {
         let cost_usd = pricing.compute_cost(input, output);
 
         sqlx::query(
-            "INSERT INTO cost_ledger (id, app_id, model, input_tokens, output_tokens, cost_usd, created_at) \
+            "INSERT INTO cost_entries (id, app_id, model, input_tokens, output_tokens, cost_usd, created_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)"
         )
         .bind(Uuid::now_v7())
@@ -99,7 +99,7 @@ impl CostLedger {
                 COALESCE(SUM(output_tokens), 0) as total_output_tokens, \
                 COALESCE(SUM(cost_usd), 0.0) as total_cost_usd, \
                 COUNT(*) as request_count \
-             FROM cost_ledger \
+             FROM cost_entries \
              WHERE app_id = $1 AND created_at >= $2"
         )
         .bind(app_id)
@@ -135,7 +135,7 @@ impl CostLedger {
                 COALESCE(SUM(output_tokens), 0) as total_output_tokens, \
                 COALESCE(SUM(cost_usd), 0.0) as total_cost_usd, \
                 COUNT(*) as request_count \
-             FROM cost_ledger \
+             FROM cost_entries \
              WHERE app_id = $1 AND created_at >= $2 AND created_at <= $3"
         )
         .bind(app_id)
@@ -152,7 +152,7 @@ impl CostLedger {
                 COALESCE(SUM(output_tokens), 0) as total_output_tokens, \
                 COALESCE(SUM(cost_usd), 0.0) as total_cost_usd, \
                 COUNT(*) as request_count \
-             FROM cost_ledger \
+             FROM cost_entries \
              WHERE app_id = $1 AND created_at >= $2 AND created_at < $3"
         )
         .bind(app_id)

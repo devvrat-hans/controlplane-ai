@@ -84,7 +84,7 @@ if ($hasDocker) {
     Write-Step "Running database migrations"
     Get-ChildItem infra/migrations/*.sql | Sort-Object Name | ForEach-Object {
         Write-Host "  Applying: $($_.Name)"
-        docker exec -i controlplane-postgres psql -U controlplane -d controlplane -f - < $_.FullName
+        Get-Content $_.FullName | docker exec -i controlplane-postgres psql -U controlplane -d controlplane
     }
     Write-Info "Migrations applied"
 } else {

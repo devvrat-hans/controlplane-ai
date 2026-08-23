@@ -1,10 +1,17 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
 
 # Environment
 .env
+.env.local
+.env.*.local
+
+# Python (guardrails sidecar)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
 
 # Node / Frontend
 node_modules/
@@ -30,3 +37,4 @@ controlplane-ai-prd.md
 tasks.txt
 DESIGN.md
 AI Agent Governance and Integration.pdf
+image.png

@@ -6,9 +6,9 @@ These accounts are pre-seeded in the database by migration `009_seed_demo_data.s
 
 | Email | Password | Role | Permissions |
 |-------|----------|------|-------------|
-| `admin@controlplane.test` | `Demo#Admin2026` | admin | Full access: policies, escalations, audit, settings |
-| `reviewer@controlplane.test` | `Demo#Reviewer2026` | reviewer | Can resolve escalations, view audit trail |
-| `viewer@controlplane.test` | `Demo#Viewer2026` | viewer | Read-only dashboard access |
+| `admin@controlplane.ai` | `admin123` | admin | Full access: policies, escalations, audit, settings |
+| `reviewer@controlplane.ai` | `reviewer123` | reviewer | Can resolve escalations, view audit trail |
+| `viewer@controlplane.ai` | `viewer123` | viewer | Read-only dashboard access |
 
 ## Demo Applications
 
@@ -20,25 +20,14 @@ These accounts are pre-seeded in the database by migration `009_seed_demo_data.s
 
 ## Authentication Flow
 
-1. **Login**: POST to the dashboard at `/login` with email + password
-2. **Token**: JWT is returned and stored in `sessionStorage`
-3. **API calls**: Token is sent as `Authorization: Bearer <token>`
-4. **Demo bypass**: If no token is present, API allows anonymous access
-
-## Generating Tokens Manually
-
-```bash
-# Using the API
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "admin@controlplane.test", "password": "Demo#Admin2026"}'
-
-# Response: { "token": "eyJ...", "user": { ... } }
-```
+1. **Login**: Client-side validation at `/login` with email + password
+2. **Token**: Credentials stored in `sessionStorage` (demo mode)
+3. **API calls**: Demo bypass — API allows anonymous access (no token required)
+4. **Production**: Would use proper JWT auth with server-side validation
 
 ## JWT Secret
 
-- Default: `demo-secret-key-change-in-prod`
+- Default: `dev-secret-change-me`
 - Override via environment: `JWT_SECRET=your-production-secret`
 - Algorithm: HS256
 - Expiry: 24 hours
@@ -46,5 +35,5 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 ## Security Notes
 
 - These credentials are for demonstration only
-- Passwords use placeholder hashes in the database (demo auth bypasses bcrypt)
-- In production: use proper password hashing (argon2id), rotate JWT secrets, add refresh tokens
+- Auth is client-side only in demo mode (API allows all requests)
+- In production: use proper password hashing (argon2id), server-side JWT validation, refresh tokens

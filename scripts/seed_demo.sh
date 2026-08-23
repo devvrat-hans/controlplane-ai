@@ -22,7 +22,7 @@ echo -e "${BOLD}║    ControlPlane.ai — Full Demo Seed          ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
 
 step "Running base schema migrations"
-for f in infra/migrations/0{01,02,03,04,05,06,07,08,10,11,12}*.sql; do
+for f in infra/migrations/0{01,02,03,04,05,06,07,08,10,11,12,14,15}*.sql; do
     psql "$DB_URL" --quiet -v ON_ERROR_STOP=1 -f "$f" 2>/dev/null || true
 done
 info "Base schema applied"

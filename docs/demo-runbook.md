@@ -55,7 +55,7 @@ This sends real requests and pauses between scenarios for narration.
      -H "Content-Type: application/json" \
      -H "x-api-key: YOUR_API_KEY" \
      -H "anthropic-version: 2023-06-01" \
-     -d '{"model":"claude-sonnet-4-20250514","max_tokens":256,"messages":[{"role":"user","content":"What is 2+2?"}]}'
+     -d '{"model":"qwen2.5:1.5b","max_tokens":256,"messages":[{"role":"user","content":"What is 2+2?"}]}'
    ```
 2. Show the dashboard — a green "pass" verdict appears in the live stream.
 3. "Normal traffic passes through with under 10ms added latency."

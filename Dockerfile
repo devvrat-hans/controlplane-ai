@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 COPY --from=builder /app/target/release/controlplane-gateway /usr/local/bin/controlplane-gateway
 
-EXPOSE 8900 8081
+EXPOSE 8900 8080
 
 ENV RUST_LOG=controlplane=info,tower_http=info
 ENV EVENT_BUS=inproc

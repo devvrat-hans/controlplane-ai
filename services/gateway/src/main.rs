@@ -16,10 +16,12 @@ use controlplane_common::create_provider;
 
 use controlplane_dashboard_api::{dashboard_router, spawn_sse_bridge, DashboardState, InMemoryVerdictStore, SseBroadcaster};
 use controlplane_shadow_analysis::{ShadowConfig, ShadowWorker};
+use controlplane_decision::{spawn_verdict_collector, DecisionServiceState, VerdictAggregator, PolicyEngine};
 use controlplane_cost_accounting::spawn_cost_tracker;
 use controlplane_escalation::spawn_escalation_listener;
 use controlplane_notification::spawn_notification_worker;
 use controlplane_audit::spawn_audit_subscriber;
+use controlplane_fast_path::spawn_policy_reloader;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -54,6 +56,9 @@ async fn main() -> Result<()> {
         match db::create_pool(&config.database_url).await {
             Ok(p) => {
                 info!("PostgreSQL connected");
+                if let Err(e) = db::run_migrations(&p).await {
+                    tracing::warn!(error = %e, "Migration run failed (may already be applied)");
+                }
                 Some(p)
             }
             Err(e) => {
@@ -165,6 +170,25 @@ async fn main() -> Result<()> {
     info!("Shadow analysis worker started");
 
     if let Some(ref db_pool) = pool {
+        // Policy hot-reload (polls DB for changes, swaps into fast-path cache)
+        spawn_policy_reloader(
+            db_pool.clone(),
+            fast_path_engine.policy_cache.clone(),
+            Default::default(),
+            shutdown_rx.clone(),
+        );
+        info!("Policy reloader started");
+
+        // Decision service (aggregates verdicts from fast+shadow paths)
+        let decision_state = Arc::new(DecisionServiceState {
+            pool: db_pool.clone(),
+            aggregator: VerdictAggregator::new(),
+            policy_engine: PolicyEngine::new(db_pool.clone()),
+            publisher: publisher.clone(),
+        });
+        spawn_verdict_collector(decision_state, subscriber.clone(), shutdown_rx.clone());
+        info!("Decision verdict collector started");
+
         // Cost tracking worker
         spawn_cost_tracker(db_pool.clone(), subscriber.clone(), shutdown_rx.clone());
         info!("Cost tracking worker started");

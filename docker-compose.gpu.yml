@@ -1,0 +1,15 @@
+# GPU override for ControlPlane.ai
+# Adds NVIDIA CUDA GPU support to the Ollama container.
+# Requires: nvidia-container-toolkit installed on host.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

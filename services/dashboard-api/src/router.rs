@@ -537,11 +537,11 @@ async fn get_system_config(
         proxy_addr: std::env::var("PROXY_LISTEN_ADDR")
             .unwrap_or_else(|_| "0.0.0.0:8900".into()),
         upstream_provider: std::env::var("UPSTREAM_PROVIDER")
-            .unwrap_or_else(|_| "opencode".into()),
+            .unwrap_or_else(|_| "ollama".into()),
         upstream_model: std::env::var("UPSTREAM_MODEL")
-            .unwrap_or_else(|_| "mimo-v2.5-free".into()),
+            .unwrap_or_else(|_| "qwen2.5:1.5b".into()),
         upstream_base_url: std::env::var("UPSTREAM_BASE_URL")
-            .unwrap_or_else(|_| "https://opencode.ai".into()),
+            .unwrap_or_else(|_| "http://localhost:11434".into()),
         event_bus_mode: std::env::var("EVENT_BUS")
             .unwrap_or_else(|_| "inproc".into()),
         database_connected: db_connected,
@@ -1033,7 +1033,7 @@ async fn get_user_profile(
     let profile = sqlx::query_as::<_, UserProfile>(
         "SELECT id, email, name, role, created_at FROM users WHERE email = $1"
     )
-    .bind("admin@controlplane.test")
+    .bind("admin@controlplane.ai")
     .fetch_optional(pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
@@ -1060,7 +1060,7 @@ async fn update_user_profile(
         "UPDATE users SET name = $1, updated_at = NOW() WHERE email = $2"
     )
     .bind(&name)
-    .bind("admin@controlplane.test")
+    .bind("admin@controlplane.ai")
     .execute(pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;

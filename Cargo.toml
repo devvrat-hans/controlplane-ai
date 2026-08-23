@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.82"
 license = "Apache-2.0"
@@ -68,9 +68,6 @@ regex = "1"
 # --- lock-free hot-reload --------------------------------------------------
 arc-swap = "1"
 
-# --- ONNX inference (bias/safety classifier) -------------------------------
-ort = "2"
-
 # --- errors / observability ------------------------------------------------
 thiserror = "2"
 anyhow = "1"
@@ -78,10 +75,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # --- security --------------------------------------------------------------
-argon2 = "0.5"
 jsonwebtoken = "9"
 sha2 = "0.10"
-hmac = "0.12"
 hex = "0.4"
 
 # --- infrastructure clients ------------------------------------------------
@@ -105,11 +100,7 @@ dotenvy = "0.15"
 # --- streaming ----------------------------------------------------------------
 async-stream = "0.3"
 
-# --- config ----------------------------------------------------------------
-config = "0.14"
-
 # --- dev / benchmarks --------------------------------------------------------
-tempfile = "3"
 tokio-test = "0.4"
 criterion = { version = "0.5", features = ["html_reports"] }
 
