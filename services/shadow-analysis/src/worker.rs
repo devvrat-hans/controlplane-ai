@@ -11,6 +11,7 @@ use controlplane_platform::messaging::{EventPublisher, EventSubscriber};
 use crate::bias::BiasClassifier;
 use crate::groundedness::GroundednessChecker;
 use crate::guardrails_client::GuardrailsClient;
+use crate::prompt_injection::PromptInjectionDetector;
 use crate::semantic_pii::SemanticPiiDetector;
 use crate::types::{ShadowConfig, ShadowVerdict};
 use crate::verbosity::VerbosityChecker;
@@ -140,6 +141,15 @@ async fn process_message(
         checker.check(&response_clone, &prompt_clone)
     });
 
+    // Prompt injection detection (runs on the INPUT prompt)
+    let config_clone = config.clone();
+    let prompt_clone = prompt_text.clone();
+    let prompt_injection_handle = tokio::spawn(async move {
+        let detector = PromptInjectionDetector::new(&config_clone);
+        let result = detector.check(&prompt_clone);
+        detector.to_verdict(&result)
+    });
+
     let config_clone = config.clone();
     let response_clone = response_text.clone();
     let semantic_pii_handle = tokio::spawn(async move {
@@ -171,6 +181,16 @@ async fn process_message(
     // Bias on response text produces too many false positives (opinionated != biased).
     // Only scan inputs for bias; response bias is caught by the input_bias_handle below.
     let guardrails_bias_handle: Option<tokio::task::JoinHandle<Option<ShadowVerdict>>> = None;
+
+    // DeepEval hallucination check (compares response against context)
+    let guardrails_hallucination_handle = if let Some(ref ctx) = context_text {
+        if let Some(ref url) = config.guardrails_url {
+            let client = GuardrailsClient::new(url);
+            let text = response_text.clone();
+            let context = ctx.clone();
+            Some(tokio::spawn(async move { client.scan_hallucination(&text, Some(&context)).await }))
+        } else { None }
+    } else { None };
 
     // Also scan the INPUT prompt for toxicity/bias (catches inappropriate prompts)
     let input_toxicity_handle = if config.toxicity_enabled && !prompt_text.is_empty() {
@@ -210,6 +230,10 @@ async fn process_message(
         }
     }
 
+    if let Ok(Some(v)) = prompt_injection_handle.await {
+        verdicts.push(v);
+    }
+
     if let Ok(result) = semantic_pii_handle.await {
         if let Some(v) = result.verdict {
             verdicts.push(v);
@@ -230,6 +254,12 @@ async fn process_message(
     }
 
     if let Some(handle) = guardrails_bias_handle {
+        if let Ok(Some(v)) = handle.await {
+            verdicts.push(v);
+        }
+    }
+
+    if let Some(handle) = guardrails_hallucination_handle {
         if let Ok(Some(v)) = handle.await {
             verdicts.push(v);
         }

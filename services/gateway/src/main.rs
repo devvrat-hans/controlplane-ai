@@ -125,6 +125,7 @@ async fn main() -> Result<()> {
         subscriber.clone(),
         shutdown_rx.clone(),
         Some(verdict_store.clone()),
+        pool.clone(),
     );
 
     let dashboard_state = DashboardState {

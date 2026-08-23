@@ -11,6 +11,7 @@ const navigation = [
   { name: "Escalations", href: "/escalations", icon: AlertTriangleIcon },
   { name: "Cost", href: "/cost", icon: DollarSignIcon },
   { name: "Audit", href: "/audit", icon: FileTextIcon },
+  { name: "API Docs", href: "/docs", icon: FileTextIcon },
   { name: "Settings", href: "/settings", icon: SettingsIcon },
 ];
 

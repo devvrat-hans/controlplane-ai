@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use controlplane_common::events::{subjects, DecisionPayload, EventEnvelope};
+use controlplane_common::events::{subjects, EventEnvelope, VerdictPayload};
 use controlplane_platform::messaging::EventSubscriber;
 use tracing::{error, info, warn};
 
@@ -188,60 +188,42 @@ pub fn spawn_audit_subscriber(
     let repository = AuditRepository::new(pool);
 
     tokio::spawn(async move {
-        let mut receiver = match subscriber.subscribe(subjects::DECISION_FINAL).await {
+        let mut receiver = match subscriber.subscribe(subjects::VERDICT_FAST).await {
             Ok(rx) => rx,
             Err(e) => {
-                error!(error = %e, "Audit subscriber: failed to subscribe to decisions");
+                error!(error = %e, "Audit subscriber: failed to subscribe to verdicts");
                 return;
             }
         };
 
-        info!("Audit subscriber: listening on '{}'", subjects::DECISION_FINAL);
+        info!("Audit subscriber: listening on '{}'", subjects::VERDICT_FAST);
 
         loop {
             tokio::select! {
                 msg = receiver.recv() => {
                     match msg {
                         Some(payload) => {
-                            match serde_json::from_slice::<EventEnvelope<DecisionPayload>>(&payload) {
+                            match serde_json::from_slice::<EventEnvelope<VerdictPayload>>(&payload) {
                                 Ok(envelope) => {
-                                    let decision = &envelope.payload.decision;
-                                    let action = decision.final_outcome.as_str();
+                                    let verdict = &envelope.payload.verdict;
+                                    let action = verdict.outcome.as_str();
+                                    let metadata = serde_json::json!({
+                                        "axis": verdict.axis.as_str(),
+                                        "check_name": verdict.check_name,
+                                        "confidence": verdict.confidence,
+                                    });
 
-                                    // Create audit record for each contributing verdict
-                                    if decision.contributing_verdicts.is_empty() {
-                                        // Still log the decision even with no contributing verdicts
-                                        let metadata = serde_json::json!({
-                                            "app_id": decision.app_id,
-                                            "policy_version": decision.applied_policy_version,
-                                        });
-                                        if let Err(e) = repository.append(
-                                            decision.call_id,
-                                            Uuid::nil(), // no specific verdict
-                                            action,
-                                            Some(metadata),
-                                        ).await {
-                                            error!(error = %e, "Failed to append audit record");
-                                        }
-                                    } else {
-                                        for &verdict_id in &decision.contributing_verdicts {
-                                            let metadata = serde_json::json!({
-                                                "app_id": decision.app_id,
-                                                "policy_version": decision.applied_policy_version,
-                                            });
-                                            if let Err(e) = repository.append(
-                                                decision.call_id,
-                                                verdict_id,
-                                                action,
-                                                Some(metadata),
-                                            ).await {
-                                                error!(error = %e, "Failed to append audit record");
-                                            }
-                                        }
+                                    if let Err(e) = repository.append(
+                                        verdict.call_id,
+                                        verdict.id,
+                                        action,
+                                        Some(metadata),
+                                    ).await {
+                                        error!(error = %e, "Failed to append audit record");
                                     }
                                 }
                                 Err(e) => {
-                                    warn!(error = %e, "Failed to deserialize decision payload");
+                                    warn!(error = %e, "Failed to deserialize verdict payload");
                                 }
                             }
                         }

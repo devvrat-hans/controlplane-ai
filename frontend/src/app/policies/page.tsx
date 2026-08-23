@@ -1,21 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select } from "@/components/ui/select";
 import { useUser, canEditPolicies } from "@/lib/auth";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 interface PolicyThresholds {
   block_threshold: number;
   escalate_threshold: number;
   max_tokens_per_request: number;
   retry_max_count: number;
+  // Guardrails sidecar checks
   pii_detection: boolean;
   toxicity_detection: boolean;
   bias_detection: boolean;
+  // Fast-path checks
+  unsafe_content_enabled: boolean;
+  secret_detection_enabled: boolean;
+  // Shadow-path checks
+  prompt_injection_enabled: boolean;
+  hallucination_detection_enabled: boolean;
+  groundedness_enabled: boolean;
+  verbosity_enabled: boolean;
+  semantic_pii_enabled: boolean;
 }
 
 const DEFAULT_THRESHOLDS: PolicyThresholds = {
@@ -26,18 +37,36 @@ const DEFAULT_THRESHOLDS: PolicyThresholds = {
   pii_detection: true,
   toxicity_detection: true,
   bias_detection: true,
+  unsafe_content_enabled: true,
+  secret_detection_enabled: true,
+  prompt_injection_enabled: true,
+  hallucination_detection_enabled: true,
+  groundedness_enabled: true,
+  verbosity_enabled: true,
+  semantic_pii_enabled: true,
 };
 
-const APPS = [
-  { id: "10000000-0000-0000-0000-000000000001", name: "ChatBot-Prod" },
-  { id: "10000000-0000-0000-0000-000000000002", name: "Agent-Internal" },
-  { id: "10000000-0000-0000-0000-000000000003", name: "RAG-Customer-Support" },
-];
+interface AppInfo {
+  id: string;
+  name: string;
+}
 
 export default function PoliciesPage() {
   const user = useUser();
   const isEditable = user ? canEditPolicies(user.role) : false;
-  const [selectedApp, setSelectedApp] = useState(APPS[0].id);
+  const [apps, setApps] = useState<AppInfo[]>([]);
+  const [selectedApp, setSelectedApp] = useState("");
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v1/apps`)
+      .then((r) => r.json())
+      .then((data: AppInfo[]) => {
+        setApps(data);
+        if (data.length > 0) setSelectedApp(data[0].id);
+      })
+      .catch(() => {});
+  }, []);
+
   const [thresholds, setThresholds] = useState<PolicyThresholds>(DEFAULT_THRESHOLDS);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -58,6 +87,13 @@ export default function PoliciesPage() {
               pii_detection: config.pii_detection ?? DEFAULT_THRESHOLDS.pii_detection,
               toxicity_detection: config.toxicity_detection ?? DEFAULT_THRESHOLDS.toxicity_detection,
               bias_detection: config.bias_detection ?? DEFAULT_THRESHOLDS.bias_detection,
+              unsafe_content_enabled: config.unsafe_content_enabled ?? DEFAULT_THRESHOLDS.unsafe_content_enabled,
+              secret_detection_enabled: config.secret_detection_enabled ?? DEFAULT_THRESHOLDS.secret_detection_enabled,
+              prompt_injection_enabled: config.prompt_injection_enabled ?? DEFAULT_THRESHOLDS.prompt_injection_enabled,
+              hallucination_detection_enabled: config.hallucination_detection_enabled ?? DEFAULT_THRESHOLDS.hallucination_detection_enabled,
+              groundedness_enabled: config.groundedness_enabled ?? DEFAULT_THRESHOLDS.groundedness_enabled,
+              verbosity_enabled: config.verbosity_enabled ?? DEFAULT_THRESHOLDS.verbosity_enabled,
+              semantic_pii_enabled: config.semantic_pii_enabled ?? DEFAULT_THRESHOLDS.semantic_pii_enabled,
             });
             return;
           }
@@ -66,6 +102,18 @@ export default function PoliciesPage() {
     } catch { /* fall through to defaults */ }
     setThresholds(DEFAULT_THRESHOLDS);
   };
+
+  const toggle = (key: keyof PolicyThresholds) => {
+    if (!isEditable) return;
+    setThresholds((t) => ({ ...t, [key]: !t[key] }));
+  };
+
+  // Load policy whenever selectedApp changes (including initial load)
+  useEffect(() => {
+    if (selectedApp) {
+      loadPolicy(selectedApp);
+    }
+  }, [selectedApp]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -88,6 +136,19 @@ export default function PoliciesPage() {
     }
   };
 
+  const enabledCount = [
+    "unsafe_content_enabled",
+    "secret_detection_enabled",
+    "prompt_injection_enabled",
+    "hallucination_detection_enabled",
+    "groundedness_enabled",
+    "verbosity_enabled",
+    "semantic_pii_enabled",
+    "pii_detection",
+    "toxicity_detection",
+    "bias_detection",
+  ].filter((k) => thresholds[k as keyof PolicyThresholds] as boolean).length;
+
   return (
     <DashboardShell>
       <div className="space-y-6">
@@ -95,30 +156,28 @@ export default function PoliciesPage() {
           <div>
             <h2 className="text-2xl font-bold tracking-tight">Policies</h2>
             <p className="text-muted-foreground">
-              Configure detection thresholds per application.
+              Configure detection thresholds and enable/disable governance checks per application.
             </p>
           </div>
-          <select
-            value={selectedApp}
-            onChange={(e) => { setSelectedApp(e.target.value); loadPolicy(e.target.value); }}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-          >
-            {APPS.map((app) => (
-              <option key={app.id} value={app.id}>
-                {app.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-3">
+            <Badge variant="outline" className="text-xs">
+              {enabledCount}/10 checks enabled
+            </Badge>
+            <Select
+              value={selectedApp}
+              onValueChange={(v) => setSelectedApp(v)}
+              options={apps.map((app) => ({ value: app.id, label: app.name }))}
+              size="md"
+            />
+          </div>
         </div>
 
-        {/* Performance Axis */}
+        {/* Thresholds */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-sm font-medium">
-              Performance Axis
-            </CardTitle>
+            <CardTitle className="text-sm font-medium">Thresholds</CardTitle>
             <Badge variant="outline" className="text-xs">
-              Groundedness, Verbosity
+              Performance &amp; Cost
             </Badge>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -129,9 +188,7 @@ export default function PoliciesPage() {
               min={0.5}
               max={1.0}
               step={0.05}
-              onChange={(v) =>
-                setThresholds((t) => ({ ...t, block_threshold: v }))
-              }
+              onChange={(v) => setThresholds((t) => ({ ...t, block_threshold: v }))}
               action="Block"
             />
             <ThresholdSlider
@@ -141,122 +198,204 @@ export default function PoliciesPage() {
               min={0.3}
               max={0.9}
               step={0.05}
-              onChange={(v) =>
-                setThresholds((t) => ({ ...t, escalate_threshold: v }))
-              }
+              onChange={(v) => setThresholds((t) => ({ ...t, escalate_threshold: v }))}
               action="Escalate"
+            />
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-sm font-semibold tracking-tight text-foreground/90">Max Tokens Per Request</label>
+                  <span className="text-sm font-mono tabular-nums text-muted-foreground">
+                    {thresholds.max_tokens_per_request.toLocaleString()}
+                  </span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 right-0 my-auto h-1.5 rounded-full bg-border/60" />
+                  <div
+                    className="absolute inset-y-0 left-0 my-auto h-1.5 rounded-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-150"
+                    style={{ width: `${((thresholds.max_tokens_per_request - 500) / (16000 - 500)) * 100}%` }}
+                  />
+                  <input
+                    type="range"
+                    min={500}
+                    max={16000}
+                    step={500}
+                    value={thresholds.max_tokens_per_request}
+                    onChange={(e) =>
+                      setThresholds((t) => ({ ...t, max_tokens_per_request: parseInt(e.target.value) }))
+                    }
+                    className="relative z-10 w-full h-6 appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_4px_rgba(0,0,0,0.25)] [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:duration-150 [&::-webkit-slider-thumb]:hover:scale-125 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_4px_rgba(0,0,0,0.25)] [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-500 [&::-moz-range-thumb]:appearance-none"
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-muted-foreground/50 mt-1 font-mono">
+                  <span>500</span>
+                  <span>16,000</span>
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-sm font-semibold tracking-tight text-foreground/90">Max Retries</label>
+                  <span className="text-sm font-mono tabular-nums text-muted-foreground">
+                    {thresholds.retry_max_count}
+                  </span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 right-0 my-auto h-1.5 rounded-full bg-border/60" />
+                  <div
+                    className="absolute inset-y-0 left-0 my-auto h-1.5 rounded-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-150"
+                    style={{ width: `${((thresholds.retry_max_count - 1) / (10 - 1)) * 100}%` }}
+                  />
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    step={1}
+                    value={thresholds.retry_max_count}
+                    onChange={(e) =>
+                      setThresholds((t) => ({ ...t, retry_max_count: parseInt(e.target.value) }))
+                    }
+                    className="relative z-10 w-full h-6 appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_4px_rgba(0,0,0,0.25)] [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-blue-500 [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:duration-150 [&::-webkit-slider-thumb]:hover:scale-125 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_4px_rgba(0,0,0,0.25)] [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-blue-500 [&::-moz-range-thumb]:appearance-none"
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-muted-foreground/50 mt-1 font-mono">
+                  <span>1</span>
+                  <span>10</span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Fast-Path Governance Checks */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-medium">Fast-Path Checks</CardTitle>
+            <Badge variant="outline" className="text-xs bg-green-500/10 text-green-500 border-green-500/20">
+              &lt;10ms latency
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Synchronous checks that run on every response before it reaches the client. Cannot be disabled individually — disable at the engine level.
+            </p>
+
+            <GuardrailToggle
+              label="Unsafe Content Detection"
+              description="Blocks responses containing known unsafe keywords (hacking, malware, weapons, self-harm). Uses deterministic keyword matching with context awareness."
+              provider="Fast-Path Engine"
+              enabled={thresholds.unsafe_content_enabled}
+              onChange={() => toggle("unsafe_content_enabled")}
+              disabled={!isEditable}
+            />
+
+            <GuardrailToggle
+              label="Secret Detection"
+              description="Detects and auto-redacts secrets in responses (API keys, SSNs, emails, credit cards). Uses regex pattern matching with entropy scoring."
+              provider="Fast-Path Engine"
+              enabled={thresholds.secret_detection_enabled}
+              onChange={() => toggle("secret_detection_enabled")}
+              disabled={!isEditable}
             />
           </CardContent>
         </Card>
 
-        {/* Cost Axis */}
+        {/* Shadow-Path Governance Checks */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-sm font-medium">Cost Axis</CardTitle>
-            <Badge variant="outline" className="text-xs">
-              Token Budget, Retry Detection
+            <CardTitle className="text-sm font-medium">Shadow-Path Checks</CardTitle>
+            <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-500 border-orange-500/20">
+              Async (1-2s)
             </Badge>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium">
-                  Max Tokens Per Request
-                </label>
-                <span className="text-sm font-mono text-muted-foreground">
-                  {thresholds.max_tokens_per_request.toLocaleString()}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={500}
-                max={16000}
-                step={500}
-                value={thresholds.max_tokens_per_request}
-                onChange={(e) =>
-                  setThresholds((t) => ({
-                    ...t,
-                    max_tokens_per_request: parseInt(e.target.value),
-                  }))
-                }
-                className="w-full accent-primary"
-              />
-              <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
-                <span>500</span>
-                <span>16,000</span>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium">
-                  Max Retries Before Escalation
-                </label>
-                <span className="text-sm font-mono text-muted-foreground">
-                  {thresholds.retry_max_count}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={1}
-                max={10}
-                step={1}
-                value={thresholds.retry_max_count}
-                onChange={(e) =>
-                  setThresholds((t) => ({
-                    ...t,
-                    retry_max_count: parseInt(e.target.value),
-                  }))
-                }
-                className="w-full accent-primary"
-              />
-              <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
-                <span>1</span>
-                <span>10</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Responsibility Axis */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-sm font-medium">
-              Responsibility Axis
-            </CardTitle>
-            <Badge variant="outline" className="text-xs">
-              PII, Toxicity, Bias
-            </Badge>
-          </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             <p className="text-xs text-muted-foreground">
-              Enable or disable governance guardrails powered by open-source frameworks.
+              Expensive checks that run asynchronously after the response is delivered. Verdicts appear in the dashboard ~1-2s later.
             </p>
 
             <GuardrailToggle
-              label="PII Detection"
-              description="Detect and redact personally identifiable information (SSN, emails, credit cards, names, etc.)"
+              label="Prompt Injection Detection"
+              description="Detects adversarial inputs (jailbreaking, instruction override, role hijacking, prompt extraction). Uses 3-layer detection: pattern matching (25+ known patterns), structural heuristics, and encoding analysis."
+              provider="Pure Rust"
+              enabled={thresholds.prompt_injection_enabled}
+              onChange={() => toggle("prompt_injection_enabled")}
+              disabled={!isEditable}
+            />
+
+            <GuardrailToggle
+              label="Hallucination Detection"
+              description="Compares model response against provided context to detect unsupported claims using DeepEval's LLM-as-a-judge approach."
+              provider="DeepEval"
+              enabled={thresholds.hallucination_detection_enabled}
+              onChange={() => toggle("hallucination_detection_enabled")}
+              disabled={!isEditable}
+            />
+
+            <GuardrailToggle
+              label="Groundedness Scoring"
+              description="Evaluates whether response claims are supported by the provided context. Scores each claim and flags low-groundedness responses."
+              provider="NLI Model"
+              enabled={thresholds.groundedness_enabled}
+              onChange={() => toggle("groundedness_enabled")}
+              disabled={!isEditable}
+            />
+
+            <GuardrailToggle
+              label="Verbosity Detection"
+              description="Detects excessively verbose responses that inflate token costs. Uses response-to-prompt ratio and information density scoring."
+              provider="Shadow Analysis"
+              enabled={thresholds.verbosity_enabled}
+              onChange={() => toggle("verbosity_enabled")}
+              disabled={!isEditable}
+            />
+
+            <GuardrailToggle
+              label="Semantic PII Detection"
+              description="NLP-based PII detection on response content. Identifies personally identifiable information using NER and pattern analysis."
+              provider="NER Model"
+              enabled={thresholds.semantic_pii_enabled}
+              onChange={() => toggle("semantic_pii_enabled")}
+              disabled={!isEditable}
+            />
+          </CardContent>
+        </Card>
+
+        {/* Guardrails Sidecar Checks */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-medium">Guardrails Sidecar</CardTitle>
+            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-500 border-blue-500/20">
+              Python (Presidio + LLM Guard)
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              External Python sidecar checks using Microsoft Presidio and LLM Guard frameworks. Runs on both input prompts and output responses.
+            </p>
+
+            <GuardrailToggle
+              label="PII Detection (Presidio)"
+              description="Microsoft Presidio-based PII detection on responses. Scans for SSNs, emails, credit cards, phone numbers, and named entities."
               provider="Microsoft Presidio"
               enabled={thresholds.pii_detection}
-              onChange={(v) => setThresholds((t) => ({ ...t, pii_detection: v }))}
+              onChange={() => toggle("pii_detection")}
               disabled={!isEditable}
             />
 
             <GuardrailToggle
               label="Toxicity Detection"
-              description="Block toxic, harmful, or unsafe content (hate speech, violence, self-harm)"
+              description="LLM Guard-based toxicity scanning on both input prompts and output responses. Detects hate speech, violence, self-harm content."
               provider="LLM Guard"
               enabled={thresholds.toxicity_detection}
-              onChange={(v) => setThresholds((t) => ({ ...t, toxicity_detection: v }))}
+              onChange={() => toggle("toxicity_detection")}
               disabled={!isEditable}
             />
 
             <GuardrailToggle
               label="Bias Detection"
-              description="Flag demographic stereotypes, cultural prejudices, or unfair treatment across protected groups"
+              description="Scans input prompts for demographic stereotypes, cultural prejudices, and unfair treatment across protected groups."
               provider="LLM Guard"
               enabled={thresholds.bias_detection}
-              onChange={(v) => setThresholds((t) => ({ ...t, bias_detection: v }))}
+              onChange={() => toggle("bias_detection")}
               disabled={!isEditable}
             />
           </CardContent>
@@ -268,37 +407,22 @@ export default function PoliciesPage() {
             <button
               onClick={handleSave}
               disabled={saving}
-              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="rounded-lg bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.15),0_0_12px_rgba(16,185,129,0.15)] hover:bg-emerald-400 hover:shadow-[0_1px_4px_rgba(0,0,0,0.2),0_0_16px_rgba(16,185,129,0.25)] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
             >
               {saving ? "Saving..." : "Save Policy"}
             </button>
           ) : (
-            <span className="rounded-md border border-border px-4 py-2 text-sm text-muted-foreground">
+            <span className="rounded-lg border border-border px-5 py-2.5 text-sm text-muted-foreground/60">
               Read-only (admin required)
             </span>
           )}
           {saved && (
-            <span className="text-sm text-green-500">
+            <span className="flex items-center gap-1.5 text-sm text-emerald-400 font-medium">
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
               Policy saved successfully
             </span>
           )}
         </div>
-
-        {/* Policy version history placeholder */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              Version History
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <VersionRow version={3} date="2026-08-19" change="Updated block threshold to 0.9" active />
-              <VersionRow version={2} date="2026-08-18" change="Added retry detection limit" />
-              <VersionRow version={1} date="2026-08-17" change="Initial policy creation" />
-            </div>
-          </CardContent>
-        </Card>
       </div>
     </DashboardShell>
   );
@@ -324,32 +448,39 @@ function ThresholdSlider({
   action: string;
 }) {
   return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="text-sm font-medium">{label}</label>
+    <div className="group">
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-sm font-semibold tracking-tight text-foreground/90">{label}</label>
         <div className="flex items-center gap-2">
-          <span className="text-sm font-mono text-muted-foreground">
+          <span className="text-sm font-mono tabular-nums text-muted-foreground">
             {value.toFixed(2)}
           </span>
           <Badge
             variant="outline"
-            className={`text-[10px] ${action === "Block" ? "text-red-500 border-red-500/30" : "text-orange-500 border-orange-500/30"}`}
+            className={`text-[10px] px-1.5 py-0 ${action === "Block" ? "text-red-400 border-red-500/30" : "text-orange-400 border-orange-500/30"}`}
           >
             {action}
           </Badge>
         </div>
       </div>
-      <p className="text-xs text-muted-foreground mb-2">{description}</p>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full accent-primary"
-      />
-      <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+      <p className="text-[11px] text-muted-foreground/70 mb-3">{description}</p>
+      <div className="relative">
+        <div className="absolute inset-y-0 left-0 right-0 my-auto h-1.5 rounded-full bg-border/60" />
+        <div
+          className="absolute inset-y-0 left-0 my-auto h-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-150"
+          style={{ width: `${((value - min) / (max - min)) * 100}%` }}
+        />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          className="relative z-10 w-full h-6 appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_4px_rgba(0,0,0,0.25)] [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-emerald-500 [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:duration-150 [&::-webkit-slider-thumb]:hover:scale-125 [&::-webkit-slider-thumb]:focus-visible:outline-none [&::-webkit-slider-thumb]:focus-visible:ring-2 [&::-webkit-slider-thumb]:focus-visible:ring-emerald-500/40 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_4px_rgba(0,0,0,0.25)] [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-emerald-500 [&::-moz-range-thumb]:appearance-none"
+        />
+      </div>
+      <div className="flex justify-between text-[10px] text-muted-foreground/50 mt-1.5 font-mono">
         <span>{min}</span>
         <span>{max}</span>
       </div>
@@ -369,67 +500,67 @@ function GuardrailToggle({
   description: string;
   provider: string;
   enabled: boolean;
-  onChange: (v: boolean) => void;
+  onChange: () => void;
   disabled?: boolean;
 }) {
   return (
-    <div className={`flex items-center justify-between rounded-lg border p-4 ${enabled ? "border-primary/30 bg-primary/5" : "border-border"}`}>
-      <div className="space-y-1 flex-1 mr-4">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{label}</span>
-          <Badge variant="outline" className="text-[10px] font-mono">
+    <div
+      className={`group relative flex items-center gap-4 rounded-xl border p-4 transition-all duration-300 ease-in-out ${
+        enabled
+          ? "border-emerald-500/25 bg-emerald-500/[0.04] shadow-[0_0_0_1px_rgba(16,185,129,0.08)]"
+          : "border-border/60 bg-card hover:border-border hover:bg-accent/30"
+      } ${disabled ? "pointer-events-none opacity-50" : ""}`}
+    >
+      {/* Status indicator dot */}
+      <div
+        className={`mt-0.5 h-2 w-2 shrink-0 rounded-full transition-colors duration-300 ${
+          enabled ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" : "bg-muted-foreground/30"
+        }`}
+      />
+
+      <div className="flex-1 space-y-1.5">
+        <div className="flex items-center gap-2.5">
+          <span className="text-sm font-semibold tracking-tight text-foreground/90 group-hover:text-foreground transition-colors">
+            {label}
+          </span>
+          <Badge
+            variant="outline"
+            className={`text-[10px] font-mono px-1.5 py-0 ${
+              enabled
+                ? "border-emerald-500/25 text-emerald-500/80"
+                : "border-border text-muted-foreground/60"
+            }`}
+          >
             {provider}
           </Badge>
         </div>
-        <p className="text-xs text-muted-foreground">{description}</p>
+        <p className="text-[11px] leading-relaxed text-muted-foreground/70 max-w-[520px]">
+          {description}
+        </p>
       </div>
+
+      {/* Toggle switch */}
       <button
         type="button"
         role="switch"
         aria-checked={enabled}
+        aria-label={`${label} toggle`}
         disabled={disabled}
-        onClick={() => onChange(!enabled)}
-        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
-          enabled ? "bg-primary" : "bg-muted"
+        onClick={onChange}
+        className={`relative inline-flex h-[26px] w-[46px] shrink-0 cursor-pointer items-center rounded-full transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-40 ${
+          enabled
+            ? "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.25),inset_0_1px_0_rgba(255,255,255,0.15)]"
+            : "bg-border/80 shadow-inner"
         }`}
       >
         <span
-          className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ease-in-out ${
-            enabled ? "translate-x-5" : "translate-x-0"
+          className={`pointer-events-none inline-block h-[18px] w-[18px] rounded-full shadow-lg transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
+            enabled
+              ? "translate-x-[24px] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_8px_rgba(16,185,129,0.3)]"
+              : "translate-x-[3px] bg-muted-foreground/50 shadow-[0_1px_2px_rgba(0,0,0,0.15)]"
           }`}
         />
       </button>
-    </div>
-  );
-}
-
-function VersionRow({
-  version,
-  date,
-  change,
-  active,
-}: {
-  version: number;
-  date: string;
-  change: string;
-  active?: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between rounded-md border border-border p-3">
-      <div className="flex items-center gap-3">
-        <span className="text-xs font-mono text-muted-foreground">
-          v{version}
-        </span>
-        <span className="text-sm">{change}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        {active && (
-          <Badge className="text-[10px] bg-green-500/10 text-green-500 border-green-500/20">
-            Active
-          </Badge>
-        )}
-        <span className="text-xs text-muted-foreground">{date}</span>
-      </div>
     </div>
   );
 }

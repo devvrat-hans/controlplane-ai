@@ -48,6 +48,14 @@ struct BiasResponse {
     duration_ms: f64,
 }
 
+#[derive(Deserialize)]
+struct HallucinationResponse {
+    is_hallucinated: bool,
+    score: f64,
+    reason: String,
+    duration_ms: f64,
+}
+
 pub struct GuardrailsClient {
     base_url: String,
     http: reqwest::Client,
@@ -236,6 +244,63 @@ impl GuardrailsClient {
             }
             Err(e) => {
                 warn!(error = %e, "Failed to reach guardrails bias endpoint");
+                None
+            }
+        }
+    }
+
+    pub async fn scan_hallucination(&self, text: &str, context: Option<&str>) -> Option<ShadowVerdict> {
+        let url = format!("{}/scan/hallucination", self.base_url);
+        let body = ScanRequest {
+            text: text.to_string(),
+            prompt: context.map(|s| s.to_string()),
+        };
+
+        match self.http.post(&url).json(&body).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<HallucinationResponse>().await {
+                    Ok(result) => {
+                        debug!(
+                            is_hallucinated = result.is_hallucinated,
+                            score = result.score,
+                            reason = %result.reason,
+                            duration_ms = result.duration_ms,
+                            "DeepEval hallucination check complete"
+                        );
+                        if result.is_hallucinated {
+                            let outcome = if result.score > 0.8 {
+                                Outcome::Escalate
+                            } else {
+                                Outcome::Edit
+                            };
+
+                            Some(ShadowVerdict {
+                                axis: Axis::Performance,
+                                check_name: "deepeval-hallucination".to_string(),
+                                outcome,
+                                confidence: result.score as f32,
+                                reason: format!(
+                                    "Hallucination detected: {} (score: {:.2})",
+                                    result.reason, result.score
+                                ),
+                                duration_ms: result.duration_ms as u32,
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to parse hallucination response");
+                        None
+                    }
+                }
+            }
+            Ok(resp) => {
+                warn!(status = %resp.status(), "Guardrails hallucination endpoint returned error");
+                None
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to reach guardrails hallucination endpoint");
                 None
             }
         }

@@ -6,6 +6,8 @@ use std::fmt;
 pub enum ProviderKind {
     Anthropic,
     Gemini,
+    OpenCode,
+    Ollama,
 }
 
 impl fmt::Display for ProviderKind {
@@ -13,6 +15,8 @@ impl fmt::Display for ProviderKind {
         match self {
             ProviderKind::Anthropic => write!(f, "anthropic"),
             ProviderKind::Gemini => write!(f, "gemini"),
+            ProviderKind::OpenCode => write!(f, "opencode"),
+            ProviderKind::Ollama => write!(f, "ollama"),
         }
     }
 }
@@ -24,6 +28,8 @@ impl std::str::FromStr for ProviderKind {
         match s.to_lowercase().as_str() {
             "anthropic" => Ok(ProviderKind::Anthropic),
             "gemini" => Ok(ProviderKind::Gemini),
+            "opencode" | "oxalpha" => Ok(ProviderKind::OpenCode),
+            "ollama" => Ok(ProviderKind::Ollama),
             _ => Err(format!("unknown provider: {s}")),
         }
     }

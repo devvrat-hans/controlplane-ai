@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use tracing::{error, info};
 use uuid::Uuid;
 
-use controlplane_common::events::{subjects, DecisionPayload, EventEnvelope};
+use controlplane_common::events::{subjects, EventEnvelope, VerdictPayload};
 use controlplane_common::types::{AppId, Outcome, Resolution};
 use controlplane_platform::messaging::{EventPublisher, EventSubscriber};
 
@@ -219,7 +219,7 @@ impl EscalationQueue {
     }
 }
 
-/// Background subscriber that creates escalation cases from decision events.
+/// Background subscriber that creates escalation cases from verdict events.
 pub fn spawn_escalation_listener(
     pool: PgPool,
     subscriber: Arc<dyn EventSubscriber>,
@@ -229,33 +229,58 @@ pub fn spawn_escalation_listener(
     let queue = EscalationQueue::new(pool, publisher);
 
     tokio::spawn(async move {
-        let mut receiver = match subscriber.subscribe(subjects::DECISION_FINAL).await {
+        // Subscribe to fast-path verdicts (where escalated outcomes originate)
+        let mut receiver = match subscriber.subscribe(subjects::VERDICT_FAST).await {
             Ok(rx) => rx,
             Err(e) => {
-                error!(error = %e, "Escalation listener: failed to subscribe");
+                error!(error = %e, "Escalation listener: failed to subscribe to verdicts");
                 return;
             }
         };
 
-        info!("Escalation listener: monitoring '{}'", subjects::DECISION_FINAL);
+        info!("Escalation listener: monitoring '{}'", subjects::VERDICT_FAST);
 
         loop {
             tokio::select! {
                 msg = receiver.recv() => {
                     match msg {
                         Some(payload) => {
-                            if let Ok(envelope) = serde_json::from_slice::<EventEnvelope<DecisionPayload>>(&payload) {
-                                let decision = &envelope.payload.decision;
-                                if decision.final_outcome == Outcome::Escalate {
-                                    // Look up the verdict that caused escalation
-                                    // For now, create case from the decision metadata
+                            // Try to parse as a verdict event
+                            if let Ok(envelope) = serde_json::from_slice::<EventEnvelope<VerdictPayload>>(&payload) {
+                                let verdict = &envelope.payload.verdict;
+                                if verdict.outcome == Outcome::Escalate {
+                                    // Look up app_id from intercepted_calls if envelope has nil
+                                    let app_id = if envelope.app_id.is_nil() {
+                                        match sqlx::query_scalar::<_, Uuid>(
+                                            "SELECT app_id FROM intercepted_calls WHERE id = $1"
+                                        )
+                                        .bind(verdict.call_id)
+                                        .fetch_optional(&queue.pool)
+                                        .await
+                                        {
+                                            Ok(Some(id)) => id,
+                                            _ => {
+                                                error!(call_id = %verdict.call_id, "Cannot find app_id for call");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        envelope.app_id
+                                    };
+
+                                    info!(
+                                        correlation_id = %envelope.correlation_id,
+                                        verdict_id = %verdict.id,
+                                        app_id = %app_id,
+                                        "Escalation listener: creating case from escalated verdict"
+                                    );
                                     if let Err(e) = queue.create_case(
-                                        decision.contributing_verdicts.first().copied().unwrap_or(Uuid::nil()),
-                                        decision.call_id,
-                                        decision.app_id,
-                                        "unknown", // axis from verdict
-                                        0.0,
-                                        "Escalated by decision engine",
+                                        verdict.id,
+                                        verdict.call_id,
+                                        app_id,
+                                        verdict.axis.as_str(),
+                                        verdict.confidence,
+                                        &verdict.reason,
                                     ).await {
                                         error!(error = %e, "Failed to create escalation case");
                                     }

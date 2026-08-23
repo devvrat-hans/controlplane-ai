@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { fetchApi } from "@/lib/api";
 import { useUser, canResolveEscalations } from "@/lib/auth";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 interface EscalationCase {
   id: string;

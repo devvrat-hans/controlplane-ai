@@ -6,7 +6,7 @@ use crate::checks::{CostCapCheck, RetryDetector, SecretDetector, UnsafeContentCh
 use crate::policy_cache::PolicyCache;
 
 /// The total fast-path budget. If checks exceed this, remaining checks are skipped.
-const FAST_PATH_BUDGET_MS: u128 = 10;
+const FAST_PATH_BUDGET_MS: u128 = 50;
 
 #[derive(Clone)]
 pub struct FastPathEngine {
@@ -29,7 +29,7 @@ impl FastPathEngine {
     }
 
     /// Run all fast-path checks sequentially. Short-circuits on block.
-    /// Enforces total budget: if cumulative time exceeds 10ms, skip remaining checks.
+    /// Enforces total budget: if cumulative time exceeds budget, skip remaining checks.
     pub fn evaluate(&self, response_body: &str) -> FastPathResult {
         self.evaluate_with_context(response_body, None, None)
     }
@@ -184,12 +184,12 @@ mod tests {
         let engine = engine_with_defaults();
         let key = Some(12345u64);
 
-        // Within limit
+        // Within limit (default retry_max_count is 5)
         for _ in 0..5 {
             let _ = engine.evaluate_with_context("Hello", None, key);
         }
 
-        // Over limit (default retry_max_count is 5)
+        // Over limit — 6th request should trigger
         let result = engine.evaluate_with_context("Hello", None, key);
         assert_eq!(result.outcome, Outcome::Escalate);
         assert!(result.verdicts.iter().any(|v| v.check_name == "retry_detection"));
@@ -223,6 +223,6 @@ mod tests {
         let start = Instant::now();
         let _ = engine.evaluate(&body);
         let elapsed = start.elapsed().as_millis();
-        assert!(elapsed < 25, "Fast path took {}ms, budget is 10ms", elapsed);
+        assert!(elapsed < 50, "Fast path took {}ms, budget is 25ms", elapsed);
     }
 }

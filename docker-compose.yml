@@ -37,23 +37,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # --- Mock AI Upstream ---
-  mock-upstream:
-    image: python:3.11-alpine
-    container_name: controlplane-mock-upstream
-    working_dir: /app
-    volumes:
-      - ./scripts/mock_upstream.py:/app/mock_upstream.py:ro
-    command: ["python", "mock_upstream.py", "9999"]
-    ports:
-      - "9999:9999"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:9999/v1/messages', data=b'{}', headers={'Content-Type':'application/json'}))"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-
   # --- Python Guardrails (Presidio + LLM Guard) ---
   guardrails:
     build:
@@ -83,8 +66,10 @@ services:
       EVENT_BUS: inproc
       PROXY_LISTEN_ADDR: 0.0.0.0:8900
       DASHBOARD_API_PORT: "8081"
-      UPSTREAM_BASE_URL: http://mock-upstream:9999
+      UPSTREAM_PROVIDER: opencode
+      UPSTREAM_BASE_URL: https://opencode.ai
       UPSTREAM_API_KEY: ""
+      UPSTREAM_MODEL: x-preview-f-free
       GUARDRAILS_URL: http://guardrails:8200
       JWT_SECRET: change-me-in-production
       RUST_LOG: controlplane=info,tower_http=info
@@ -94,8 +79,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      mock-upstream:
-        condition: service_started
       guardrails:
         condition: service_started
 

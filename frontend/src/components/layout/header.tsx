@@ -1,21 +1,35 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { useTheme } from "@/components/providers/theme-provider";
+import {
+  Dropdown,
+  DropdownTrigger,
+  DropdownContent,
+  DropdownItem,
+  DropdownSeparator,
+  DropdownLabel,
+} from "@/components/ui/dropdown-menu";
+import { Select } from "@/components/ui/select";
 
 interface UserInfo {
   email: string;
   role: string;
 }
 
+const APP_OPTIONS = [
+  { value: "all", label: "All Applications" },
+  { value: "chatbot-prod", label: "chatbot-prod" },
+  { value: "copilot-internal", label: "copilot-internal" },
+  { value: "support-agent", label: "support-agent" },
+];
+
 export function Header() {
   const { theme, toggle } = useTheme();
   const router = useRouter();
   const [user, setUser] = useState<UserInfo | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const [selectedApp, setSelectedApp] = useState("all");
 
   useEffect(() => {
     const stored = sessionStorage.getItem("cp-user");
@@ -24,17 +38,6 @@ export function Header() {
         setUser(JSON.parse(stored));
       } catch { /* ignore */ }
     }
-  }, []);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
   const initials = user
@@ -67,12 +70,12 @@ export function Header() {
           <span className="text-[12px] text-muted-foreground font-mono hidden sm:inline">
             APP
           </span>
-          <select className="h-8 rounded-md border border-border bg-background px-2.5 text-[13px] font-medium focus:outline-none focus:ring-2 focus:ring-ring/20 transition-colors">
-            <option>All Applications</option>
-            <option>chatbot-prod</option>
-            <option>copilot-internal</option>
-            <option>support-agent</option>
-          </select>
+          <Select
+            value={selectedApp}
+            onValueChange={setSelectedApp}
+            options={APP_OPTIONS}
+            size="sm"
+          />
         </div>
       </div>
 
@@ -99,84 +102,48 @@ export function Header() {
         </button>
 
         {/* User dropdown */}
-        <div ref={menuRef} className="relative ml-1">
-          <button
-            onClick={() => setMenuOpen(!menuOpen)}
-            className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent transition-colors cursor-pointer"
-          >
-            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-chart-1 to-chart-2 flex items-center justify-center">
+        <Dropdown>
+          <DropdownTrigger>
+            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-chart-1 to-chart-3 flex items-center justify-center">
               <span className="text-[11px] font-semibold text-white">{initials}</span>
             </div>
             <div className="hidden md:block text-left">
               <p className="text-[13px] font-medium leading-none">{displayName}</p>
               <p className="text-[11px] text-muted-foreground mt-0.5">{user?.email ?? "guest"}</p>
             </div>
-            <ChevronDownIcon className={`h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 ${menuOpen ? "rotate-180" : ""}`} />
-          </button>
+            <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" />
+          </DropdownTrigger>
 
-          {/* Dropdown menu */}
-          {menuOpen && (
-            <div className="absolute right-0 top-full mt-2 w-56 rounded-xl border border-border bg-card shadow-vl5 py-1.5 z-50">
-              {/* User info header */}
-              <div className="px-3.5 py-2.5 border-b border-border">
-                <p className="text-[13px] font-medium">{displayName}</p>
-                <p className="text-[12px] text-muted-foreground">{user?.email ?? "guest"}</p>
-              </div>
+          <DropdownContent align="end">
+            <DropdownLabel>
+              <p className="text-[13px] font-medium">{displayName}</p>
+              <p className="text-[12px] text-muted-foreground">{user?.email ?? "guest"}</p>
+            </DropdownLabel>
 
-              {/* Menu items */}
-              <div className="py-1.5">
-                <DropdownItem icon={<UserIcon />} label="Profile" href="/settings" onClick={() => setMenuOpen(false)} />
-                <DropdownItem icon={<SettingsIcon />} label="Settings" href="/settings" onClick={() => setMenuOpen(false)} />
-                <DropdownItem icon={<KeyIcon />} label="API Keys" href="/settings" onClick={() => setMenuOpen(false)} />
-              </div>
-
-              {/* Divider */}
-              <div className="border-t border-border py-1.5">
-                <DropdownItem icon={<LogOutIcon />} label="Log out" onClick={handleLogout} danger />
-              </div>
+            <div className="py-1">
+              <DropdownItem
+                href="/settings"
+                icon={<SettingsIcon />}
+              >
+                Settings
+              </DropdownItem>
             </div>
-          )}
-        </div>
+
+            <DropdownSeparator />
+
+            <div className="py-1">
+              <DropdownItem onClick={handleLogout} icon={<LogOutIcon />} danger>
+                Log out
+              </DropdownItem>
+            </div>
+          </DropdownContent>
+        </Dropdown>
       </div>
     </header>
   );
 }
 
-function DropdownItem({
-  icon,
-  label,
-  href,
-  onClick,
-  danger,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  href?: string;
-  onClick?: () => void;
-  danger?: boolean;
-}) {
-  const classes = `flex items-center gap-2.5 px-3.5 py-2 text-[13px] w-full transition-colors ${
-    danger
-      ? "text-[#ee0000] hover:bg-[#ee0000]/5"
-      : "text-foreground hover:bg-accent"
-  }`;
-
-  if (href) {
-    return (
-      <Link href={href} onClick={onClick} className={classes}>
-        <span className="w-4 h-4 shrink-0 opacity-70">{icon}</span>
-        {label}
-      </Link>
-    );
-  }
-
-  return (
-    <button onClick={onClick} className={classes}>
-      <span className="w-4 h-4 shrink-0 opacity-70">{icon}</span>
-      {label}
-    </button>
-  );
-}
+// ─── Icons ───────────────────────────────────────────────────────────────
 
 function MenuIcon({ className }: { className?: string }) {
   return (
@@ -192,7 +159,10 @@ function SunIcon({ className }: { className?: string }) {
   return (
     <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" />
+      <path d="M12 2v2" /><path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" /><path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" />
     </svg>
   );
 }
@@ -207,7 +177,7 @@ function MoonIcon({ className }: { className?: string }) {
 
 function ChevronDownIcon({ className }: { className?: string }) {
   return (
-    <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="m6 9 6 6 6-6" />
     </svg>
   );

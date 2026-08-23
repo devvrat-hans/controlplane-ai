@@ -39,6 +39,8 @@ impl AppConfig {
             match upstream_provider {
                 ProviderKind::Anthropic => "https://api.anthropic.com".to_string(),
                 ProviderKind::Gemini => "https://generativelanguage.googleapis.com".to_string(),
+                ProviderKind::OpenCode => "https://opencode.ai".to_string(),
+                ProviderKind::Ollama => "http://localhost:11434".to_string(),
             }
         });
 
@@ -49,6 +51,8 @@ impl AppConfig {
             .unwrap_or_else(|_| match upstream_provider {
                 ProviderKind::Anthropic => "claude-sonnet-4-20250514".to_string(),
                 ProviderKind::Gemini => "gemini-2.0-flash".to_string(),
+                ProviderKind::OpenCode => "mimo-v2.5-free".to_string(),
+                ProviderKind::Ollama => "qwen2.5:1.5b".to_string(),
             });
 
         Ok(Self {

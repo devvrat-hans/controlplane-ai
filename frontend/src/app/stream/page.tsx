@@ -2,11 +2,27 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
+/** Shape returned by GET /api/v1/verdicts/recent */
+interface DbVerdict {
+  id: string;
+  call_id: string;
+  app_id: string | null;
+  axis: string;
+  path: string;
+  outcome: string;
+  confidence: number;
+  reason: string;
+  check_name: string;
+  latency_ms: number | null;
+  created_at: string;
+}
+
+/** Shape received from SSE events */
 interface SseVerdict {
   type: string;
   correlation_id: string;
@@ -24,19 +40,99 @@ interface SseVerdict {
   };
 }
 
+/** Unified shape used by the UI */
+interface StreamVerdict {
+  id: string;
+  call_id: string;
+  correlation_id: string;
+  app_id: string;
+  timestamp: string;
+  axis: string;
+  path: string;
+  outcome: string;
+  confidence: number;
+  reason: string;
+  check_name: string;
+}
+
+function dbVerdictToStream(d: DbVerdict): StreamVerdict {
+  return {
+    id: d.id,
+    call_id: d.call_id,
+    correlation_id: d.call_id, // DB records don't have correlation_id
+    app_id: d.app_id ?? "",
+    timestamp: d.created_at,
+    axis: d.axis,
+    path: d.path,
+    outcome: d.outcome,
+    confidence: d.confidence,
+    reason: d.reason,
+    check_name: d.check_name,
+  };
+}
+
+function sseVerdictToStream(s: SseVerdict): StreamVerdict {
+  return {
+    id: s.verdict.id,
+    call_id: s.verdict.call_id,
+    correlation_id: s.correlation_id,
+    app_id: s.app_id,
+    timestamp: s.timestamp,
+    axis: s.verdict.axis,
+    path: s.verdict.path,
+    outcome: s.verdict.outcome,
+    confidence: s.verdict.confidence,
+    reason: s.verdict.reason,
+    check_name: s.verdict.check_name,
+  };
+}
+
 type OutcomeFilter = "all" | "pass" | "edit" | "block" | "escalate";
 type AxisFilter = "all" | "performance" | "cost" | "responsibility";
 
 export default function LiveStreamPage() {
-  const [verdicts, setVerdicts] = useState<SseVerdict[]>([]);
+  const [verdicts, setVerdicts] = useState<StreamVerdict[]>([]);
   const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [paused, setPaused] = useState(false);
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>("all");
   const [axisFilter, setAxisFilter] = useState<AxisFilter>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const bufferRef = useRef<SseVerdict[]>([]);
+  const bufferRef = useRef<StreamVerdict[]>([]);
+  const seenIdsRef = useRef<Set<string>>(new Set());
 
+  // ─── 1. Load historical verdicts from DB on mount ───────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchRecent() {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/verdicts/recent?limit=100`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+
+        const rows: DbVerdict[] = data.verdicts ?? [];
+        const mapped = rows.map(dbVerdictToStream);
+
+        // Track IDs to avoid duplicates when SSE events arrive
+        mapped.forEach((v) => seenIdsRef.current.add(v.id));
+
+        setVerdicts(mapped);
+        bufferRef.current = mapped;
+      } catch {
+        // API might not be running — that's fine, SSE will provide data
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    fetchRecent();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ─── 2. Connect SSE for real-time updates ───────────────────
   const connect = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -55,9 +151,15 @@ export default function LiveStreamPage() {
       try {
         const data = JSON.parse(event.data) as SseVerdict;
         if (data.type === "verdict") {
-          bufferRef.current = [data, ...bufferRef.current].slice(0, 200);
+          const mapped = sseVerdictToStream(data);
+
+          // Deduplicate — skip if already loaded from DB
+          if (seenIdsRef.current.has(mapped.id)) return;
+          seenIdsRef.current.add(mapped.id);
+
+          bufferRef.current = [mapped, ...bufferRef.current].slice(0, 200);
           if (!paused) {
-            setVerdicts((prev) => [data, ...prev].slice(0, 200));
+            setVerdicts((prev) => [mapped, ...prev].slice(0, 200));
           }
         }
       } catch {
@@ -81,9 +183,8 @@ export default function LiveStreamPage() {
   };
 
   const filteredVerdicts = verdicts.filter((v) => {
-    if (outcomeFilter !== "all" && v.verdict.outcome !== outcomeFilter)
-      return false;
-    if (axisFilter !== "all" && v.verdict.axis !== axisFilter) return false;
+    if (outcomeFilter !== "all" && v.outcome !== outcomeFilter) return false;
+    if (axisFilter !== "all" && v.axis !== axisFilter) return false;
     return true;
   });
 
@@ -121,64 +222,73 @@ export default function LiveStreamPage() {
         </div>
 
         {/* Filters */}
-        <div className="flex flex-wrap gap-2">
-          <FilterGroup
-            label="Outcome"
-            value={outcomeFilter}
-            onChange={(v) => setOutcomeFilter(v as OutcomeFilter)}
-            options={[
-              { value: "all", label: "All" },
-              { value: "pass", label: "Pass" },
-              { value: "edit", label: "Edit" },
-              { value: "block", label: "Block" },
-              { value: "escalate", label: "Escalate" },
-            ]}
-          />
-          <FilterGroup
-            label="Axis"
-            value={axisFilter}
-            onChange={(v) => setAxisFilter(v as AxisFilter)}
-            options={[
-              { value: "all", label: "All" },
-              { value: "performance", label: "Performance" },
-              { value: "cost", label: "Cost" },
-              { value: "responsibility", label: "Responsibility" },
-            ]}
-          />
-          <div className="ml-auto text-xs text-muted-foreground self-center">
-            {filteredVerdicts.length} verdicts
-            {paused && " (paused)"}
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <FilterGroup
+              label="Outcome"
+              value={outcomeFilter}
+              onChange={(v) => setOutcomeFilter(v as OutcomeFilter)}
+              options={[
+                { value: "all", label: "All" },
+                { value: "pass", label: "Pass" },
+                { value: "edit", label: "Edit" },
+                { value: "block", label: "Block" },
+                { value: "escalate", label: "Escalate" },
+              ]}
+            />
+            <div className="ml-auto text-xs text-muted-foreground">
+              {filteredVerdicts.length} verdicts
+              {paused && " (paused)"}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <FilterGroup
+              label="Axis"
+              value={axisFilter}
+              onChange={(v) => setAxisFilter(v as AxisFilter)}
+              options={[
+                { value: "all", label: "All" },
+                { value: "performance", label: "Performance" },
+                { value: "cost", label: "Cost" },
+                { value: "responsibility", label: "Responsibility" },
+              ]}
+            />
           </div>
         </div>
 
         {/* Stream */}
         <Card>
           <CardContent className="p-0">
-            {filteredVerdicts.length === 0 ? (
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center mb-3 animate-pulse">
+                  <StreamIcon className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <p className="text-sm text-muted-foreground">Loading verdicts...</p>
+              </div>
+            ) : filteredVerdicts.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-center">
                 <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center mb-3">
                   <StreamIcon className="h-6 w-6 text-muted-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
                   {connected
-                    ? "Waiting for verdicts..."
+                    ? "No verdicts match the current filters."
                     : "Connecting to SSE endpoint..."}
                 </p>
                 <p className="text-xs text-muted-foreground/60 mt-1">
-                  Send requests through the proxy to see live verdicts here.
+                  Send requests through the proxy or seed the database to see verdicts here.
                 </p>
               </div>
             ) : (
               <div className="divide-y divide-border max-h-[calc(100vh-300px)] overflow-y-auto">
                 {filteredVerdicts.map((v) => (
                   <VerdictRow
-                    key={v.verdict.id}
+                    key={v.id}
                     data={v}
-                    expanded={expanded === v.verdict.id}
+                    expanded={expanded === v.id}
                     onToggle={() =>
-                      setExpanded(
-                        expanded === v.verdict.id ? null : v.verdict.id
-                      )
+                      setExpanded(expanded === v.id ? null : v.id)
                     }
                   />
                 ))}
@@ -196,11 +306,10 @@ function VerdictRow({
   expanded,
   onToggle,
 }: {
-  data: SseVerdict;
+  data: StreamVerdict;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const v = data.verdict;
   const time = new Date(data.timestamp).toLocaleTimeString();
 
   return (
@@ -209,29 +318,29 @@ function VerdictRow({
       onClick={onToggle}
     >
       <div className="flex items-center gap-3">
-        <OutcomeDot outcome={v.outcome} />
+        <OutcomeDot outcome={data.outcome} />
         <span className="text-xs font-mono text-muted-foreground w-16 shrink-0">
           {time}
         </span>
         <span className="text-sm font-medium truncate flex-1">
-          {v.check_name}
+          {data.check_name}
         </span>
         <Badge variant="outline" className="text-[10px] capitalize">
-          {v.axis}
+          {data.axis}
         </Badge>
         <Badge
           variant="outline"
           className={`text-[10px] ${
-            v.path === "fast"
+            data.path === "fast"
               ? "border-blue-500/50 text-blue-500"
               : "border-purple-500/50 text-purple-500"
           }`}
         >
-          {v.path}
+          {data.path}
         </Badge>
-        <OutcomeBadge outcome={v.outcome} />
+        <OutcomeBadge outcome={data.outcome} />
         <span className="text-[10px] text-muted-foreground w-10 text-right">
-          {(v.confidence * 100).toFixed(0)}%
+          {(data.confidence * 100).toFixed(0)}%
         </span>
       </div>
 
@@ -248,7 +357,7 @@ function VerdictRow({
             <div>
               <span className="text-muted-foreground">Call ID:</span>
               <code className="ml-1 text-[10px]">
-                {v.call_id.slice(0, 8)}...
+                {data.call_id.slice(0, 8)}...
               </code>
             </div>
             <div>
@@ -259,13 +368,20 @@ function VerdictRow({
             </div>
             <div>
               <span className="text-muted-foreground">Confidence:</span>
-              <span className="ml-1">{(v.confidence * 100).toFixed(1)}%</span>
+              <span className="ml-1">{(data.confidence * 100).toFixed(1)}%</span>
             </div>
           </div>
           <div className="text-xs">
             <span className="text-muted-foreground">Reason:</span>
-            <p className="mt-1 text-foreground">{v.reason}</p>
+            <p className="mt-1 text-foreground">{data.reason}</p>
           </div>
+          <a
+            href={`/requests/${data.call_id}`}
+            className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            View full request details →
+          </a>
         </div>
       )}
     </div>

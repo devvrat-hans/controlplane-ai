@@ -55,6 +55,26 @@ fn gemini_request_body() -> String {
     .unwrap()
 }
 
+fn opencode_request_body() -> String {
+    serde_json::to_string(&serde_json::json!({
+        "model": "mimo-v2.5-free",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 256,
+        "stream": false
+    }))
+    .unwrap()
+}
+
+fn ollama_request_body() -> String {
+    serde_json::to_string(&serde_json::json!({
+        "model": "qwen2.5:1.5b",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 256,
+        "stream": false
+    }))
+    .unwrap()
+}
+
 fn anthropic_upstream_response() -> serde_json::Value {
     serde_json::json!({
         "content": [{"type": "text", "text": "Response from upstream"}],
@@ -306,6 +326,8 @@ async fn both_providers_return_correlation_id() {
         let body = match provider_kind {
             ProviderKind::Anthropic => anthropic_request_body(),
             ProviderKind::Gemini => gemini_request_body(),
+            ProviderKind::OpenCode => opencode_request_body(),
+            ProviderKind::Ollama => ollama_request_body(),
         };
 
         let request = Request::builder()
@@ -348,6 +370,8 @@ async fn both_providers_return_latency_header() {
         let body = match provider_kind {
             ProviderKind::Anthropic => anthropic_request_body(),
             ProviderKind::Gemini => gemini_request_body(),
+            ProviderKind::OpenCode => opencode_request_body(),
+            ProviderKind::Ollama => ollama_request_body(),
         };
 
         let request = Request::builder()
@@ -393,6 +417,8 @@ async fn both_providers_pass_through_clean_content() {
         let body = match provider_kind {
             ProviderKind::Anthropic => anthropic_request_body(),
             ProviderKind::Gemini => gemini_request_body(),
+            ProviderKind::OpenCode => opencode_request_body(),
+            ProviderKind::Ollama => ollama_request_body(),
         };
 
         let request = Request::builder()

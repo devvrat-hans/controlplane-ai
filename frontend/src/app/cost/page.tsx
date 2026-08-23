@@ -26,6 +26,12 @@ interface CostSummary {
   avg_tokens_per_request: number;
 }
 
+interface CostTimeseries {
+  hour: string;
+  tokens: number;
+  requests: number;
+}
+
 interface CostAnomaly {
   app_id: string;
   metric: string;
@@ -34,29 +40,17 @@ interface CostAnomaly {
   deviation_pct: number;
 }
 
-// Demo data for charts when API is not available
-const DEMO_USAGE_DATA = Array.from({ length: 24 }, (_, i) => ({
-  hour: `${i}:00`,
-  chatbot: Math.floor(Math.random() * 5000 + 2000),
-  copilot: Math.floor(Math.random() * 3000 + 1000),
-  support: Math.floor(Math.random() * 2000 + 500),
-}));
-
-const DEMO_COST_DATA = [
-  { day: "Mon", chatbot: 4.2, copilot: 2.8, support: 1.5 },
-  { day: "Tue", chatbot: 3.8, copilot: 3.2, support: 1.8 },
-  { day: "Wed", chatbot: 5.1, copilot: 2.5, support: 1.2 },
-  { day: "Thu", chatbot: 4.5, copilot: 2.9, support: 2.1 },
-  { day: "Fri", chatbot: 6.2, copilot: 3.1, support: 1.6 },
-  { day: "Sat", chatbot: 2.1, copilot: 1.2, support: 0.8 },
-  { day: "Sun", chatbot: 1.8, copilot: 0.9, support: 0.5 },
-];
-
 export default function CostPage() {
-  const { data: summary } = useQuery<CostSummary>({
+  const { data: summary, isLoading: summaryLoading } = useQuery<CostSummary>({
     queryKey: ["cost-summary"],
     queryFn: () => fetchApi<CostSummary>("/api/v1/cost/summary"),
     refetchInterval: 10000,
+  });
+
+  const { data: timeseries } = useQuery<CostTimeseries[]>({
+    queryKey: ["cost-timeseries"],
+    queryFn: () => fetchApi<CostTimeseries[]>("/api/v1/cost/timeseries"),
+    refetchInterval: 30000,
   });
 
   const { data: anomalies } = useQuery<CostAnomaly[]>({
@@ -65,9 +59,16 @@ export default function CostPage() {
     refetchInterval: 30000,
   });
 
-  const totalSpend = summary?.total_cost_usd ?? 12.8;
+  const totalSpend = summary?.total_cost_usd ?? 0;
   const projectedMonthly = totalSpend * 30;
   const baseline = projectedMonthly * 0.85;
+
+  // Build chart data from real timeseries
+  const chartData = (timeseries ?? []).map((t) => ({
+    hour: t.hour,
+    tokens: t.tokens,
+    requests: t.requests,
+  }));
 
   return (
     <DashboardShell>
@@ -84,23 +85,23 @@ export default function CostPage() {
           <SummaryCard
             title="Total Spend Today"
             value={`$${totalSpend.toFixed(2)}`}
+            loading={summaryLoading}
           />
           <SummaryCard
             title="Projected Monthly"
             value={`$${projectedMonthly.toFixed(0)}`}
+            loading={summaryLoading}
           />
           <SummaryCard
             title="vs. Baseline"
-            value={`${projectedMonthly > baseline ? "+" : ""}${(((projectedMonthly - baseline) / baseline) * 100).toFixed(1)}%`}
+            value={`${projectedMonthly > baseline ? "+" : ""}${baseline > 0 ? (((projectedMonthly - baseline) / baseline) * 100).toFixed(1) : "0"}%`}
             variant={projectedMonthly > baseline * 1.2 ? "warning" : "success"}
+            loading={summaryLoading}
           />
           <SummaryCard
             title="Tokens Today"
-            value={
-              summary
-                ? `${(summary.total_tokens / 1000).toFixed(0)}K`
-                : "124K"
-            }
+            value={summary ? `${(summary.total_tokens / 1000).toFixed(0)}K` : "0"}
+            loading={summaryLoading}
           />
         </div>
 
@@ -122,9 +123,7 @@ export default function CostPage() {
                   >
                     <div className="text-sm">
                       <span className="font-medium">{a.app_id.slice(0, 8)}</span>
-                      <span className="text-muted-foreground ml-2">
-                        {a.metric}
-                      </span>
+                      <span className="text-muted-foreground ml-2">{a.metric}</span>
                     </div>
                     <Badge className="text-xs bg-orange-500/10 text-orange-500 border-orange-500/20">
                       +{a.deviation_pct.toFixed(0)}% above baseline
@@ -141,90 +140,99 @@ export default function CostPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-sm font-medium">
-                Token Usage (24h by App)
+                Token Usage (24h)
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <ResponsiveContainer width="100%" height={250}>
-                <LineChart data={DEMO_USAGE_DATA}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                  <XAxis dataKey="hour" fontSize={10} tickCount={6} />
-                  <YAxis fontSize={10} />
-                  <Tooltip />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="chatbot"
-                    stroke="#3b82f6"
-                    strokeWidth={2}
-                    dot={false}
-                    name="chatbot-prod"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="copilot"
-                    stroke="#8b5cf6"
-                    strokeWidth={2}
-                    dot={false}
-                    name="copilot-internal"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="support"
-                    stroke="#10b981"
-                    strokeWidth={2}
-                    dot={false}
-                    name="support-agent"
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+              {chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={250}>
+                  <LineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                    <XAxis dataKey="hour" fontSize={10} tickCount={6} />
+                    <YAxis fontSize={10} />
+                    <Tooltip />
+                    <Legend />
+                    <Line
+                      type="monotone"
+                      dataKey="tokens"
+                      stroke="#3b82f6"
+                      strokeWidth={2}
+                      dot={false}
+                      name="Tokens"
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex h-[250px] items-center justify-center text-sm text-muted-foreground">
+                  No token usage data yet. Send requests through the proxy to populate.
+                </div>
+              )}
             </CardContent>
           </Card>
 
-          {/* Cost per app bar chart */}
+          {/* Requests bar chart */}
           <Card>
             <CardHeader>
               <CardTitle className="text-sm font-medium">
-                Daily Cost by App ($)
+                Requests per Hour
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={DEMO_COST_DATA}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                  <XAxis dataKey="day" fontSize={10} />
-                  <YAxis fontSize={10} />
-                  <Tooltip />
-                  <Legend />
-                  <Bar
-                    dataKey="chatbot"
-                    fill="#3b82f6"
-                    radius={[2, 2, 0, 0]}
-                    name="chatbot-prod"
-                  />
-                  <Bar
-                    dataKey="copilot"
-                    fill="#8b5cf6"
-                    radius={[2, 2, 0, 0]}
-                    name="copilot-internal"
-                  />
-                  <Bar
-                    dataKey="support"
-                    fill="#10b981"
-                    radius={[2, 2, 0, 0]}
-                    name="support-agent"
-                  />
-                  <ReferenceLine
-                    y={5.0}
-                    stroke="#ef4444"
-                    strokeDasharray="3 3"
-                    label={{ value: "Budget", position: "right", fontSize: 10 }}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
+              {chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={250}>
+                  <BarChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                    <XAxis dataKey="hour" fontSize={10} />
+                    <YAxis fontSize={10} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar
+                      dataKey="requests"
+                      fill="#3b82f6"
+                      radius={[2, 2, 0, 0]}
+                      name="Requests"
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex h-[250px] items-center justify-center text-sm text-muted-foreground">
+                  No request data yet. Send requests through the proxy to populate.
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
+
+        {/* Cost details */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Cost Breakdown</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <p className="text-muted-foreground">Total Requests</p>
+                <p className="text-lg font-bold">{summary?.request_count ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Total Tokens</p>
+                <p className="text-lg font-bold">{summary?.total_tokens?.toLocaleString() ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Avg Tokens/Request</p>
+                <p className="text-lg font-bold">{summary?.avg_tokens_per_request?.toFixed(0) ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Est. Cost/Request</p>
+                <p className="text-lg font-bold">
+                  ${summary && summary.request_count > 0
+                    ? (summary.total_cost_usd / summary.request_count).toFixed(6)
+                    : "0.000000"}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </DashboardShell>
   );
@@ -234,10 +242,12 @@ function SummaryCard({
   title,
   value,
   variant,
+  loading,
 }: {
   title: string;
   value: string;
   variant?: "warning" | "success";
+  loading?: boolean;
 }) {
   const color =
     variant === "warning"
@@ -254,7 +264,11 @@ function SummaryCard({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <p className={`text-2xl font-bold ${color}`}>{value}</p>
+        {loading ? (
+          <div className="h-7 w-20 animate-pulse rounded bg-muted" />
+        ) : (
+          <p className={`text-2xl font-bold ${color}`}>{value}</p>
+        )}
       </CardContent>
     </Card>
   );

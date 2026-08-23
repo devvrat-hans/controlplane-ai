@@ -21,7 +21,7 @@ describe("fetchApi", () => {
 
     const result = await fetchApi<{ data: string }>("/api/v1/test");
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8081/api/v1/test",
+      "http://localhost:8080/api/v1/test",
       expect.objectContaining({
         headers: { "Content-Type": "application/json" },
       })

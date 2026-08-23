@@ -5,6 +5,8 @@ pub mod models;
 pub mod provider;
 pub mod provider_anthropic;
 pub mod provider_gemini;
+pub mod provider_ollama;
+pub mod provider_opencode;
 pub mod providers;
 pub mod types;
 

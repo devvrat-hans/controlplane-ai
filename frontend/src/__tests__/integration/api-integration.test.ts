@@ -18,7 +18,7 @@ describe("API Client Integration", () => {
 
       await fetchApi("/api/v1/health");
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:8081/api/v1/health",
+        "http://localhost:8080/api/v1/health",
         expect.objectContaining({
           headers: { "Content-Type": "application/json" },
         })
@@ -81,7 +81,7 @@ describe("API Client Integration", () => {
       expect(result.blocks_24h).toBe(9);
       expect(result.top_blocked_axes).toHaveLength(2);
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:8081/api/v1/stats/overview",
+        "http://localhost:8080/api/v1/stats/overview",
         expect.any(Object)
       );
     });
@@ -96,7 +96,7 @@ describe("API Client Integration", () => {
 
       await getRecentVerdicts(25);
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:8081/api/v1/verdicts/recent?limit=25",
+        "http://localhost:8080/api/v1/verdicts/recent?limit=25",
         expect.any(Object)
       );
     });
@@ -109,7 +109,7 @@ describe("API Client Integration", () => {
 
       await getRecentVerdicts();
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:8081/api/v1/verdicts/recent?limit=10",
+        "http://localhost:8080/api/v1/verdicts/recent?limit=10",
         expect.any(Object)
       );
     });

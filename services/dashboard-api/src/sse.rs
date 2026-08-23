@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
@@ -36,12 +37,14 @@ impl SseBroadcaster {
     }
 }
 
-/// Spawn a background task that bridges NATS verdicts to the SSE broadcaster.
+/// Spawn a background task that bridges event bus verdicts to the SSE broadcaster,
+/// in-memory store, and (when available) persists them to PostgreSQL.
 pub fn spawn_sse_bridge(
     broadcaster: SseBroadcaster,
     subscriber: Arc<dyn EventSubscriber>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     verdict_store: Option<InMemoryVerdictStore>,
+    db_pool: Option<PgPool>,
 ) {
     tokio::spawn(async move {
         let mut receiver = match subscriber.subscribe("controlplane.verdict.*").await {
@@ -60,38 +63,76 @@ pub fn spawn_sse_bridge(
                     match msg {
                         Some(payload) => {
                             if let Ok(envelope) = serde_json::from_slice::<EventEnvelope<VerdictPayload>>(&payload) {
+                                let verdict = &envelope.payload.verdict;
                                 let event = serde_json::json!({
                                     "type": "verdict",
                                     "correlation_id": envelope.correlation_id,
                                     "app_id": envelope.app_id,
                                     "timestamp": envelope.timestamp,
                                     "verdict": {
-                                        "id": envelope.payload.verdict.id,
-                                        "call_id": envelope.payload.verdict.call_id,
-                                        "axis": envelope.payload.verdict.axis.as_str(),
-                                        "path": envelope.payload.verdict.path.as_str(),
-                                        "outcome": envelope.payload.verdict.outcome.as_str(),
-                                        "confidence": envelope.payload.verdict.confidence,
-                                        "reason": envelope.payload.verdict.reason,
-                                        "check_name": envelope.payload.verdict.check_name,
+                                        "id": verdict.id,
+                                        "call_id": verdict.call_id,
+                                        "axis": verdict.axis.as_str(),
+                                        "path": verdict.path.as_str(),
+                                        "outcome": verdict.outcome.as_str(),
+                                        "confidence": verdict.confidence,
+                                        "reason": verdict.reason,
+                                        "check_name": verdict.check_name,
                                     }
                                 });
                                 broadcaster.publish(event.to_string());
 
-                                // Also store in memory for the dashboard API
+                                // Store in memory for the dashboard API
                                 if let Some(ref store) = verdict_store {
                                     store.push(VerdictRecord {
-                                        id: envelope.payload.verdict.id.to_string(),
-                                        call_id: envelope.payload.verdict.call_id.to_string(),
+                                        id: verdict.id.to_string(),
+                                        call_id: verdict.call_id.to_string(),
                                         app_id: Some(envelope.app_id.to_string()),
-                                        axis: envelope.payload.verdict.axis.as_str().to_string(),
-                                        path: envelope.payload.verdict.path.as_str().to_string(),
-                                        outcome: envelope.payload.verdict.outcome.as_str().to_string(),
-                                        confidence: envelope.payload.verdict.confidence,
-                                        reason: envelope.payload.verdict.reason,
-                                        check_name: envelope.payload.verdict.check_name,
+                                        axis: verdict.axis.as_str().to_string(),
+                                        path: verdict.path.as_str().to_string(),
+                                        outcome: verdict.outcome.as_str().to_string(),
+                                        confidence: verdict.confidence,
+                                        reason: verdict.reason.clone(),
+                                        check_name: verdict.check_name.clone(),
                                         latency_ms: None,
                                         created_at: envelope.timestamp,
+                                    });
+                                }
+
+                                // Persist to PostgreSQL so dashboard queries see real data
+                                if let Some(ref pool) = db_pool {
+                                    let call_id = verdict.call_id;
+                                    let verdict_id = verdict.id;
+                                    let axis = verdict.axis.as_str();
+                                    let path = verdict.path.as_str();
+                                    let outcome = verdict.outcome.as_str();
+                                    let confidence = verdict.confidence;
+                                    let reason = verdict.reason.clone();
+                                    let check_name = verdict.check_name.clone();
+                                    let app_id = envelope.app_id;
+
+                                    let pool = pool.clone();
+                                    tokio::spawn(async move {
+                                        let result = sqlx::query(
+                                            "INSERT INTO verdicts (id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, created_at) \
+                                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) \
+                                             ON CONFLICT (id) DO NOTHING"
+                                        )
+                                        .bind(verdict_id)
+                                        .bind(call_id)
+                                        .bind(app_id)
+                                        .bind(axis)
+                                        .bind(path)
+                                        .bind(outcome)
+                                        .bind(confidence)
+                                        .bind(&reason)
+                                        .bind(&check_name)
+                                        .execute(&pool)
+                                        .await;
+
+                                        if let Err(e) = result {
+                                            warn!(error = %e, "SSE bridge: failed to persist verdict to DB");
+                                        }
                                     });
                                 }
                             }

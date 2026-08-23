@@ -5,6 +5,7 @@ import { useState } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select } from "@/components/ui/select";
 import { fetchApi } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
@@ -14,11 +15,9 @@ interface AuditRecord {
   call_id: string;
   verdict_id: string;
   action_taken: string;
-  outcome: string;
-  axis: string;
-  app_id: string;
   record_hash: string;
   prev_hash: string;
+  metadata?: { axis?: string; check_name?: string; app_id?: string } | string;
   created_at: string;
 }
 
@@ -126,32 +125,28 @@ export default function AuditPage() {
         )}
 
         {/* Filters */}
-        <div className="flex flex-wrap gap-3">
-          <select
+        <div className="flex flex-wrap items-center gap-3">
+          <Select
             value={filters.outcome}
-            onChange={(e) =>
-              setFilters((f) => ({ ...f, outcome: e.target.value }))
-            }
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-          >
-            <option value="">All Outcomes</option>
-            <option value="pass">Pass</option>
-            <option value="edit">Edit</option>
-            <option value="block">Block</option>
-            <option value="escalate">Escalate</option>
-          </select>
-          <select
+            onValueChange={(v) => setFilters((f) => ({ ...f, outcome: v }))}
+            placeholder="All Outcomes"
+            options={[
+              { value: "pass", label: "Pass" },
+              { value: "edit", label: "Edit" },
+              { value: "block", label: "Block" },
+              { value: "escalate", label: "Escalate" },
+            ]}
+          />
+          <Select
             value={filters.axis}
-            onChange={(e) =>
-              setFilters((f) => ({ ...f, axis: e.target.value }))
-            }
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-          >
-            <option value="">All Axes</option>
-            <option value="performance">Performance</option>
-            <option value="cost">Cost</option>
-            <option value="responsibility">Responsibility</option>
-          </select>
+            onValueChange={(v) => setFilters((f) => ({ ...f, axis: v }))}
+            placeholder="All Axes"
+            options={[
+              { value: "performance", label: "Performance" },
+              { value: "cost", label: "Cost" },
+              { value: "responsibility", label: "Responsibility" },
+            ]}
+          />
           <input
             type="text"
             placeholder="App ID..."
@@ -214,6 +209,12 @@ function AuditRow({
     escalate: "text-orange-500",
   };
 
+  const meta = typeof data.metadata === "string"
+    ? JSON.parse(data.metadata)
+    : data.metadata ?? {};
+  const axis = meta.axis ?? "";
+  const checkName = meta.check_name ?? data.action_taken;
+
   return (
     <div
       className="px-4 py-3 hover:bg-accent/30 cursor-pointer transition-colors"
@@ -225,14 +226,16 @@ function AuditRow({
         </span>
         <Badge
           variant="outline"
-          className={`text-[10px] capitalize ${outcomeColors[data.outcome] ?? ""}`}
+          className={`text-[10px] capitalize ${outcomeColors[data.action_taken] ?? ""}`}
         >
-          {data.outcome}
+          {data.action_taken}
         </Badge>
-        <Badge variant="outline" className="text-[10px] capitalize">
-          {data.axis}
-        </Badge>
-        <span className="text-sm truncate flex-1">{data.action_taken}</span>
+        {axis && (
+          <Badge variant="outline" className="text-[10px] capitalize">
+            {axis}
+          </Badge>
+        )}
+        <span className="text-sm truncate flex-1">{checkName}</span>
         <span className="text-[10px] font-mono text-muted-foreground">
           {data.record_hash.slice(0, 8)}...
         </span>
@@ -253,10 +256,12 @@ function AuditRow({
               <span className="text-muted-foreground">Verdict ID:</span>
               <code className="ml-1">{data.verdict_id}</code>
             </div>
-            <div>
-              <span className="text-muted-foreground">App ID:</span>
-              <code className="ml-1">{data.app_id}</code>
-            </div>
+            {meta.app_id && (
+              <div>
+                <span className="text-muted-foreground">App ID:</span>
+                <code className="ml-1">{meta.app_id}</code>
+              </div>
+            )}
           </div>
           <div className="border-t border-border pt-2">
             <span className="text-muted-foreground">Hash Chain:</span>
@@ -271,6 +276,13 @@ function AuditRow({
               </p>
             </div>
           </div>
+          <a
+            href={`/requests/${data.call_id}`}
+            className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            View full request details →
+          </a>
         </div>
       )}
     </div>

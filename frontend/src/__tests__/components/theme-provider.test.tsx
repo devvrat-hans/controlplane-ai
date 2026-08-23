@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { ThemeProvider, useTheme } from "@/components/providers/theme-provider";
 
 function ThemeDisplay() {
@@ -18,27 +18,16 @@ beforeEach(() => {
 });
 
 describe("ThemeProvider", () => {
-  it("defaults to light theme", () => {
+  it("defaults to dark theme", () => {
     render(
       <ThemeProvider>
         <ThemeDisplay />
       </ThemeProvider>
     );
-    expect(screen.getByTestId("theme-value")).toHaveTextContent("light");
-  });
-
-  it("toggles from light to dark", () => {
-    render(
-      <ThemeProvider>
-        <ThemeDisplay />
-      </ThemeProvider>
-    );
-
-    fireEvent.click(screen.getByText("Toggle"));
     expect(screen.getByTestId("theme-value")).toHaveTextContent("dark");
   });
 
-  it("toggles from dark back to light", () => {
+  it("toggles from dark to light", () => {
     render(
       <ThemeProvider>
         <ThemeDisplay />
@@ -46,10 +35,21 @@ describe("ThemeProvider", () => {
     );
 
     fireEvent.click(screen.getByText("Toggle"));
-    expect(screen.getByTestId("theme-value")).toHaveTextContent("dark");
+    expect(screen.getByTestId("theme-value")).toHaveTextContent("light");
+  });
+
+  it("toggles from light back to dark", () => {
+    render(
+      <ThemeProvider>
+        <ThemeDisplay />
+      </ThemeProvider>
+    );
 
     fireEvent.click(screen.getByText("Toggle"));
     expect(screen.getByTestId("theme-value")).toHaveTextContent("light");
+
+    fireEvent.click(screen.getByText("Toggle"));
+    expect(screen.getByTestId("theme-value")).toHaveTextContent("dark");
   });
 
   it("persists theme to localStorage", () => {
@@ -60,11 +60,11 @@ describe("ThemeProvider", () => {
     );
 
     fireEvent.click(screen.getByText("Toggle"));
-    expect(localStorage.getItem("cp-theme")).toBe("dark");
+    expect(localStorage.getItem("cp-theme")).toBe("light");
   });
 
   it("reads stored theme from localStorage on mount", () => {
-    localStorage.setItem("cp-theme", "light");
+    localStorage.setItem("cp-theme", "dark");
 
     render(
       <ThemeProvider>
@@ -72,8 +72,7 @@ describe("ThemeProvider", () => {
       </ThemeProvider>
     );
 
-    // useEffect fires synchronously in jsdom, so localStorage value is applied
-    expect(screen.getByTestId("theme-value")).toHaveTextContent("light");
+    expect(screen.getByTestId("theme-value")).toHaveTextContent("dark");
   });
 
   it("applies theme class to document element", () => {
@@ -83,11 +82,11 @@ describe("ThemeProvider", () => {
       </ThemeProvider>
     );
 
-    expect(document.documentElement.classList.contains("light")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
 
     fireEvent.click(screen.getByText("Toggle"));
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(document.documentElement.classList.contains("light")).toBe(false);
+    expect(document.documentElement.classList.contains("light")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
   });
 });
 
@@ -102,8 +101,7 @@ describe("useTheme", () => {
   });
 
   it("returns default values outside provider", () => {
-    // Should not crash — context has a default value
     render(<ThemeDisplay />);
-    expect(screen.getByTestId("theme-value")).toHaveTextContent("light");
+    expect(screen.getByTestId("theme-value")).toHaveTextContent("dark");
   });
 });
