@@ -12,7 +12,7 @@ Write-Host ""
 
 # Check gateway is running
 try {
-    Invoke-RestMethod "http://localhost:8080/health" -TimeoutSec 3 | Out-Null
+    Invoke-RestMethod "http://127.0.0.1:8080/health" -TimeoutSec 3 | Out-Null
 } catch {
     Write-Host "  [X] Dashboard API not reachable. Start with: .\scripts\start_local.ps1" -ForegroundColor Red
     exit 1

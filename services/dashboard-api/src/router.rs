@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::{get, put};
+use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -1074,6 +1074,7 @@ async fn update_user_profile(
 // === Audit Handlers ===
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct AuditQueryParams {
     app_id: Option<Uuid>,
     outcome: Option<String>,
@@ -1213,9 +1214,11 @@ struct EscalationRow {
     call_id: Uuid,
     verdict_id: Uuid,
     app_id: Uuid,
+    axis: String,
+    confidence: f32,
     reason: String,
     status: String,
-    assigned_to: Option<String>,
+    assigned_to: Option<Uuid>,
     resolution: Option<String>,
     resolution_reason: Option<String>,
     created_at: DateTime<Utc>,
@@ -1232,7 +1235,7 @@ async fn list_escalations(
     let status = params.status.unwrap_or_else(|| "open".to_string());
 
     let cases: Vec<EscalationRow> = sqlx::query_as(
-        "SELECT id, call_id, verdict_id, app_id, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
+        "SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
          FROM escalation_cases WHERE status = $1 ORDER BY created_at DESC LIMIT $2"
     )
     .bind(&status)
@@ -1241,7 +1244,7 @@ async fn list_escalations(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    Ok(Json(serde_json::json!({ "cases": cases, "total": cases.len() })))
+    Ok(Json(serde_json::json!({ "escalations": cases, "total": cases.len() })))
 }
 
 #[derive(Deserialize)]

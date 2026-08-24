@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use controlplane_common::events::{subjects, EventEnvelope, VerdictPayload};
@@ -229,8 +229,8 @@ pub fn spawn_escalation_listener(
     let queue = EscalationQueue::new(pool, publisher);
 
     tokio::spawn(async move {
-        // Subscribe to fast-path verdicts (where escalated outcomes originate)
-        let mut receiver = match subscriber.subscribe(subjects::VERDICT_FAST).await {
+        // Subscribe to all verdicts (fast + shadow) to catch escalations from either path
+        let mut receiver = match subscriber.subscribe("controlplane.verdict.*").await {
             Ok(rx) => rx,
             Err(e) => {
                 error!(error = %e, "Escalation listener: failed to subscribe to verdicts");
@@ -238,7 +238,7 @@ pub fn spawn_escalation_listener(
             }
         };
 
-        info!("Escalation listener: monitoring '{}'", subjects::VERDICT_FAST);
+        info!("Escalation listener: monitoring 'controlplane.verdict.*' (fast + shadow)");
 
         loop {
             tokio::select! {
@@ -274,15 +274,28 @@ pub fn spawn_escalation_listener(
                                         app_id = %app_id,
                                         "Escalation listener: creating case from escalated verdict"
                                     );
-                                    if let Err(e) = queue.create_case(
-                                        verdict.id,
-                                        verdict.call_id,
-                                        app_id,
-                                        verdict.axis.as_str(),
-                                        verdict.confidence,
-                                        &verdict.reason,
-                                    ).await {
-                                        error!(error = %e, "Failed to create escalation case");
+                                    // Retry with backoff (verdict row may not be persisted yet)
+                                    let mut attempts: u64 = 0;
+                                    loop {
+                                        attempts += 1;
+                                        match queue.create_case(
+                                            verdict.id,
+                                            verdict.call_id,
+                                            app_id,
+                                            verdict.axis.as_str(),
+                                            verdict.confidence,
+                                            &verdict.reason,
+                                        ).await {
+                                            Ok(_) => break,
+                                            Err(e) if attempts < 3 => {
+                                                warn!(error = %e, attempt = attempts, "Escalation case insert failed, retrying...");
+                                                tokio::time::sleep(tokio::time::Duration::from_millis(150 * attempts)).await;
+                                            }
+                                            Err(e) => {
+                                                error!(error = %e, "Failed to create escalation case after retries");
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }

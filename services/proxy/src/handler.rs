@@ -6,6 +6,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
+use sqlx::PgPool;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -25,6 +26,8 @@ pub struct ProxyState {
     pub http_client: reqwest::Client,
     pub fast_path: Arc<FastPathEngine>,
     pub publisher: Arc<dyn EventPublisher>,
+    pub pool: Option<PgPool>,
+    pub default_app_id: Uuid,
 }
 
 pub async fn proxy_handler(
@@ -117,7 +120,7 @@ pub async fn proxy_handler(
     // --- Fast-path checks (synchronous, must complete before delivery) ---
     let fast_path_start = Instant::now();
     let fast_path_result = run_fast_path_safe(
-        &state.fast_path, &response_body, output_tokens, &request_body,
+        &state.fast_path, &response_body, output_tokens, &request_body, correlation_id,
     ).await;
     let fast_path_latency_ms = fast_path_start.elapsed().as_millis() as i32;
 
@@ -131,6 +134,34 @@ pub async fn proxy_handler(
     } else {
         response_body.clone()
     };
+
+    // Persist intercepted_call to DB (must happen before verdict events)
+    let app_id = state.default_app_id;
+    if let Some(ref pool) = state.pool {
+        let req_json: Option<serde_json::Value> = serde_json::from_slice(&request_body).ok();
+        let resp_json: Option<serde_json::Value> = serde_json::from_slice(&response_body).ok();
+        if let Err(e) = sqlx::query(
+            "INSERT INTO intercepted_calls \
+             (id, correlation_id, app_id, model, request_payload, response_payload, \
+              token_count_input, token_count_output, upstream_latency_ms, fast_path_latency_ms, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) \
+             ON CONFLICT (id) DO NOTHING"
+        )
+        .bind(correlation_id)
+        .bind(correlation_id)
+        .bind(app_id)
+        .bind(&model_in_body)
+        .bind(&req_json)
+        .bind(&resp_json)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(upstream_latency_ms)
+        .bind(fast_path_latency_ms)
+        .execute(pool)
+        .await {
+            warn!(error = %e, correlation_id = %correlation_id, "Failed to persist intercepted_call");
+        }
+    }
 
     // Publish verdicts to SSE (for all outcomes including pass/block)
     let publisher_for_verdicts = state.publisher.clone();
@@ -159,7 +190,7 @@ pub async fn proxy_handler(
                 let envelope = EventEnvelope::new(
                     subjects::VERDICT_FAST,
                     correlation_id,
-                    Uuid::nil(),
+                    app_id,
                     VerdictPayload { verdict },
                 );
                 if let Ok(bytes) = envelope.to_bytes() {
@@ -186,7 +217,7 @@ pub async fn proxy_handler(
         });
 
         publish_call_async(
-            &state.publisher, correlation_id, &request_body, &response_body,
+            &state.publisher, correlation_id, app_id, &request_body, &response_body,
             input_tokens, output_tokens, upstream_latency_ms, fast_path_latency_ms,
         ).await;
 
@@ -210,7 +241,7 @@ pub async fn proxy_handler(
         let envelope = EventEnvelope::new(
             subjects::INTERCEPT_SHADOW,
             correlation_id,
-            Uuid::nil(),
+            app_id,
             shadow_req,
         );
 
@@ -263,6 +294,7 @@ async fn run_fast_path_safe(
     response_body: &[u8],
     output_tokens: Option<i32>,
     request_body: &[u8],
+    call_id: Uuid,
 ) -> FastPathSafeResult {
     let body_str = String::from_utf8_lossy(response_body);
     let session_key = {
@@ -286,7 +318,7 @@ async fn run_fast_path_safe(
         Ok(Ok(result)) => {
             let verdicts: Vec<Verdict> = result.verdicts.iter().map(|v| {
                 Verdict::new(
-                    Uuid::nil(), // call_id filled later
+                    call_id,
                     v.axis,
                     VerdictPath::Fast,
                     v.outcome,
@@ -337,6 +369,7 @@ impl FastPathSafeResult {
 async fn publish_call_async(
     publisher: &Arc<dyn EventPublisher>,
     correlation_id: Uuid,
+    app_id: Uuid,
     _request_body: &[u8],
     _response_body: &[u8],
     _input_tokens: Option<i32>,
@@ -355,7 +388,7 @@ async fn publish_call_async(
     let envelope = EventEnvelope::new(
         subjects::INTERCEPT_CAPTURED,
         correlation_id,
-        Uuid::nil(),
+        app_id,
         payload,
     );
 

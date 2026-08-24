@@ -32,9 +32,14 @@ Thumbs.db
 # Docker volumes
 pgdata/
 
+# Runtime files
+.gateway.pid
+gateway.log
+gateway.log.stdout
+
 # Extra files
 controlplane-ai-prd.md
 tasks.txt
 DESIGN.md
 AI Agent Governance and Integration.pdf
-image.png
+round_2_information.pdf

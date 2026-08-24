@@ -16,7 +16,7 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("guardrails")
 
-app = FastAPI(title="ControlPlane Guardrails", version="0.5.0")
+app = FastAPI(title="ControlPlane Guardrails", version="0.6.0")
 
 # ─── Lazy-loaded engines (heavy imports deferred to first call) ───────────────
 

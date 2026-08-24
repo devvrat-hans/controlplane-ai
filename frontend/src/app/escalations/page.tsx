@@ -10,6 +10,28 @@ import { useUser, canResolveEscalations } from "@/lib/auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
+interface RequestDetail {
+  call: {
+    id: string;
+    model: string;
+    request_payload: unknown;
+    response_payload: unknown;
+    token_count_input: number | null;
+    token_count_output: number | null;
+    upstream_latency_ms: number | null;
+    created_at: string;
+  };
+  verdicts: Array<{
+    id: string;
+    axis: string;
+    path: string;
+    outcome: string;
+    confidence: number;
+    reason: string;
+    check_name: string;
+  }>;
+}
+
 interface EscalationCase {
   id: string;
   verdict_id: string;
@@ -222,6 +244,15 @@ function CaseDetail({
 }) {
   const [reason, setReason] = useState("");
 
+  const { data: requestDetail } = useQuery<RequestDetail>({
+    queryKey: ["request-detail", data.call_id],
+    queryFn: () => fetchApi<RequestDetail>(`/api/v1/requests/${data.call_id}`),
+    enabled: !!data.call_id,
+  });
+
+  const userMessage = extractUserMessage(requestDetail?.call?.request_payload);
+  const assistantMessage = extractAssistantMessage(requestDetail?.call?.response_payload);
+
   return (
     <Card>
       <CardHeader>
@@ -251,6 +282,28 @@ function CaseDetail({
             <p className="mt-0.5">{getAge(data.created_at)}</p>
           </div>
         </div>
+
+        {/* Question & Answer */}
+        {(userMessage || assistantMessage) && (
+          <div className="space-y-2">
+            {userMessage && (
+              <div>
+                <span className="text-xs text-muted-foreground">User Message</span>
+                <p className="mt-1 text-sm rounded-md border border-blue-500/20 bg-blue-500/5 p-2">
+                  {userMessage}
+                </p>
+              </div>
+            )}
+            {assistantMessage && (
+              <div>
+                <span className="text-xs text-muted-foreground">Model Response</span>
+                <p className="mt-1 text-sm rounded-md border border-green-500/20 bg-green-500/5 p-2 whitespace-pre-wrap">
+                  {assistantMessage}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Reason */}
         <div>
@@ -431,4 +484,25 @@ function getAge(dateStr: string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function extractUserMessage(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  const messages = p.messages as Array<{ role: string; content: string }> | undefined;
+  if (!messages) return null;
+  const userMsg = messages.filter((m) => m.role === "user").pop();
+  return userMsg?.content ?? null;
+}
+
+function extractAssistantMessage(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  // OpenAI/Ollama format: choices[0].message.content
+  const choices = p.choices as Array<{ message?: { content?: string } }> | undefined;
+  if (choices?.[0]?.message?.content) return choices[0].message.content;
+  // Anthropic format: content[0].text
+  const content = p.content as Array<{ type: string; text: string }> | undefined;
+  if (content?.[0]?.text) return content[0].text;
+  return null;
 }

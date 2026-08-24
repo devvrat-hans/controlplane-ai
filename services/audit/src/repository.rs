@@ -34,6 +34,7 @@ impl AuditRepository {
         &self,
         call_id: Uuid,
         verdict_id: Uuid,
+        app_id: Uuid,
         action_taken: &str,
         metadata: Option<serde_json::Value>,
     ) -> Result<AuditRow, sqlx::Error> {
@@ -43,12 +44,13 @@ impl AuditRepository {
         let record_hash = compute_record_hash(&prev_hash, call_id, verdict_id, action_taken, now);
 
         sqlx::query(
-            "INSERT INTO audit_records (id, call_id, verdict_id, action_taken, prev_hash, record_hash, metadata, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            "INSERT INTO audit_records (id, call_id, verdict_id, app_id, action_taken, prev_hash, record_hash, metadata, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
         )
         .bind(id)
         .bind(call_id)
         .bind(verdict_id)
+        .bind(app_id)
         .bind(action_taken)
         .bind(&prev_hash)
         .bind(&record_hash)

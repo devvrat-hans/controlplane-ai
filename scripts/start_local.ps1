@@ -103,18 +103,54 @@ if (-not $tableCheck) {
 $verdictCount = psql $DB_URL -t -A -c "SELECT COUNT(*) FROM verdicts;" 2>$null
 Write-Info "Verdicts in database: $verdictCount"
 
+# ─── Kill old gateway (must happen BEFORE build to release EXE lock) ─────
+Write-Step "Stopping any previous gateway"
+# Kill from saved PID file
+$pidFile = Join-Path $PWD ".gateway.pid"
+if (Test-Path $pidFile) {
+    $oldPid = Get-Content $pidFile -ErrorAction SilentlyContinue
+    if ($oldPid) {
+        Write-Host "  Killing saved PID $oldPid" -ForegroundColor DarkGray
+        Stop-Process -Id ([int]$oldPid) -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+}
+# Stop all old background jobs from previous script runs
+Get-Job | Stop-Job -PassThru -ErrorAction SilentlyContinue | Remove-Job -Force -ErrorAction SilentlyContinue
+# Kill gateway process by name (catches any instance)
+Get-Process -Name "controlplane-gateway" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+# Kill anything holding our ports
+foreach ($port in @(8900, 8080)) {
+    Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "  Killing PID $($_.OwningProcess) on port $port" -ForegroundColor DarkGray
+        Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
+    }
+}
+# Wait for ports to fully release
+Start-Sleep -Seconds 3
+# Verify ports are free
+$still_busy = Get-NetTCPConnection -LocalPort 8900,8080 -State Listen -ErrorAction SilentlyContinue
+if ($still_busy) {
+    Write-Warn "Ports still in use after cleanup — waiting longer..."
+    Start-Sleep -Seconds 5
+    # Try once more
+    Get-NetTCPConnection -LocalPort 8900,8080 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+        Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 2
+}
+
 # ─── Build Rust ──────────────────────────────────────────────────────────
 Write-Step "Building Rust workspace"
-cargo build
+cargo build -p controlplane-gateway
+if ($LASTEXITCODE -ne 0) {
+    Write-Err "Build failed (exit code $LASTEXITCODE). Is another gateway process still running?"
+}
 Write-Info "Build complete"
 
 # ─── Start gateway ───────────────────────────────────────────────────────
 Write-Step "Starting ControlPlane gateway (provider: ollama, model: $OLLAMA_MODEL)"
-
-# Kill old processes on ports
-Get-NetTCPConnection -LocalPort 8900,8080 -ErrorAction SilentlyContinue |
-    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 1
 
 $env:DATABASE_URL = $DB_URL
 $env:EVENT_BUS = "inproc"
@@ -124,35 +160,46 @@ $env:UPSTREAM_BASE_URL = $OLLAMA_BASE_URL
 $env:DASHBOARD_API_PORT = "8080"
 $env:RUST_LOG = "info,controlplane=debug"
 
-$gatewayJob = Start-Job -ScriptBlock {
-    Set-Location $using:PWD
-    $env:DATABASE_URL = $using:DB_URL
-    $env:EVENT_BUS = "inproc"
-    $env:UPSTREAM_PROVIDER = "ollama"
-    $env:UPSTREAM_MODEL = $using:OLLAMA_MODEL
-    $env:UPSTREAM_BASE_URL = $using:OLLAMA_BASE_URL
-    $env:DASHBOARD_API_PORT = "8080"
-    $env:RUST_LOG = "info,controlplane=debug"
-    cargo run -p controlplane-gateway 2>&1
-}
+$gatewayBin = Join-Path $PWD "target\debug\controlplane-gateway.exe"
+$gatewayLog = Join-Path $PWD "gateway.log"
+
+# Use Start-Process for a direct process handle (more reliable than Start-Job)
+$gatewayProc = Start-Process -FilePath $gatewayBin -NoNewWindow -PassThru `
+    -RedirectStandardError $gatewayLog -RedirectStandardOutput "$gatewayLog.stdout"
+
+# Save PID for cleanup
+$gatewayProc.Id | Set-Content (Join-Path $PWD ".gateway.pid")
+Write-Host "  Gateway PID: $($gatewayProc.Id)" -ForegroundColor DarkGray
 
 Write-Step "Waiting for gateway..."
 $ready = $false
-for ($i = 1; $i -le 30; $i++) {
+for ($i = 1; $i -le 45; $i++) {
+    # Check if process died
+    if ($gatewayProc.HasExited) {
+        Write-Warn "Gateway process exited with code $($gatewayProc.ExitCode)"
+        if (Test-Path $gatewayLog) { Get-Content $gatewayLog | Select-Object -Last 15 | Write-Host }
+        Write-Err "Gateway crashed on startup"
+    }
     try {
-        Invoke-RestMethod "http://localhost:8080/health" -TimeoutSec 2 | Out-Null
-        Write-Info "Gateway is healthy"
+        Invoke-RestMethod "http://127.0.0.1:8080/health" -TimeoutSec 2 | Out-Null
+        Write-Info "Gateway is healthy (took ${i}s)"
         $ready = $true
         break
     } catch {
+        if ($i % 10 -eq 0) { Write-Host "  ... still waiting (${i}s)" -ForegroundColor DarkGray }
         Start-Sleep -Seconds 1
     }
 }
-if (-not $ready) { Write-Err "Gateway failed to start. Check 'Receive-Job $($gatewayJob.Id)'" }
+if (-not $ready) {
+    Write-Warn "Gateway health check timed out after 45s. Last log lines:"
+    if (Test-Path $gatewayLog) { Get-Content $gatewayLog | Select-Object -Last 15 | Write-Host }
+    Write-Err "Gateway failed to start after 45s"
+}
 
 # ─── Start frontend ──────────────────────────────────────────────────────
 Write-Step "Starting frontend dashboard"
 
+$env:NEXT_PUBLIC_API_URL = "http://localhost:8080"
 $frontendJob = Start-Job -ScriptBlock {
     Set-Location "$using:PWD\frontend"
     $env:NEXT_PUBLIC_API_URL = "http://localhost:8080"
@@ -162,7 +209,7 @@ $frontendJob = Start-Job -ScriptBlock {
 Write-Step "Waiting for frontend..."
 for ($i = 1; $i -le 20; $i++) {
     try {
-        Invoke-WebRequest "http://localhost:3000" -TimeoutSec 2 | Out-Null
+        Invoke-WebRequest "http://127.0.0.1:3000" -TimeoutSec 2 | Out-Null
         Write-Info "Frontend is ready"
         break
     } catch {
@@ -201,15 +248,20 @@ Write-Host ""
 try {
     while ($true) {
         Start-Sleep -Seconds 5
-        if ($gatewayJob.State -eq "Failed") { Write-Warn "Gateway job failed"; break }
+        if ($gatewayProc.HasExited) { Write-Warn "Gateway process died (exit code: $($gatewayProc.ExitCode))"; break }
     }
 } finally {
     Write-Step "Shutting down..."
-    Stop-Job $gatewayJob -ErrorAction SilentlyContinue
+    # Stop gateway process
+    if (-not $gatewayProc.HasExited) {
+        Stop-Process -Id $gatewayProc.Id -Force -ErrorAction SilentlyContinue
+    }
+    # Stop frontend job
     Stop-Job $frontendJob -ErrorAction SilentlyContinue
-    Remove-Job $gatewayJob -Force -ErrorAction SilentlyContinue
     Remove-Job $frontendJob -Force -ErrorAction SilentlyContinue
-    Get-NetTCPConnection -LocalPort 8900,8080 -ErrorAction SilentlyContinue |
-        ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+    # Cleanup PID file
+    Remove-Item (Join-Path $PWD ".gateway.pid") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $PWD "gateway.log") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $PWD "gateway.log.stdout") -Force -ErrorAction SilentlyContinue
     Write-Info "All services stopped."
 }

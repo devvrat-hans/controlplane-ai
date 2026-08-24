@@ -4,6 +4,7 @@ use anyhow::Result;
 use tokio::sync::watch;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 use controlplane_platform::config::{AppConfig, EventBusMode};
 use controlplane_platform::db;
@@ -56,8 +57,10 @@ async fn main() -> Result<()> {
         match db::create_pool(&config.database_url).await {
             Ok(p) => {
                 info!("PostgreSQL connected");
-                if let Err(e) = db::run_migrations(&p).await {
-                    tracing::warn!(error = %e, "Migration run failed (may already be applied)");
+                if std::env::var("RUN_MIGRATIONS").unwrap_or_default() == "true" {
+                    if let Err(e) = db::run_migrations(&p).await {
+                        tracing::warn!(error = %e, "Migration run failed (may already be applied)");
+                    }
                 }
                 Some(p)
             }
@@ -99,6 +102,8 @@ async fn main() -> Result<()> {
     info!(provider = %config.upstream_provider, "Upstream provider initialized");
 
     // ─── Proxy Server ────────────────────────────────────────────────────
+    // Default app_id for demo: ChatBot-Prod seeded in 009_seed_demo_data.sql
+    let default_app_id: Uuid = "10000000-0000-0000-0000-000000000001".parse().unwrap();
     let proxy_state = Arc::new(ProxyState {
         upstream_base_url: config.upstream_base_url.clone(),
         upstream_api_key: config.upstream_api_key.clone(),
@@ -107,16 +112,20 @@ async fn main() -> Result<()> {
         http_client: reqwest::Client::new(),
         fast_path: fast_path_engine.clone(),
         publisher: publisher.clone(),
+        pool: pool.clone(),
+        default_app_id,
     });
 
     let proxy_app = proxy_router(proxy_state);
     let proxy_addr: std::net::SocketAddr = config.proxy_listen_addr.parse()?;
 
+    let proxy_listener = tokio::net::TcpListener::bind(proxy_addr).await
+        .map_err(|e| anyhow::anyhow!("Failed to bind proxy on {}: {} (is another instance running?)", proxy_addr, e))?;
+    info!(addr = %proxy_addr, "Proxy listening");
+
     let proxy_shutdown = shutdown_rx.clone();
     let proxy_handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(proxy_addr).await.unwrap();
-        info!(addr = %proxy_addr, "Proxy listening");
-        axum::serve(listener, proxy_app)
+        axum::serve(proxy_listener, proxy_app)
             .with_graceful_shutdown(shutdown_signal(proxy_shutdown))
             .await
             .unwrap();
@@ -141,11 +150,13 @@ async fn main() -> Result<()> {
     let dashboard_app = dashboard_router(dashboard_state);
     let api_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.dashboard_api_port).parse()?;
 
+    let api_listener = tokio::net::TcpListener::bind(api_addr).await
+        .map_err(|e| anyhow::anyhow!("Failed to bind dashboard API on {}: {} (is another instance running?)", api_addr, e))?;
+    info!(addr = %api_addr, "Dashboard API listening");
+
     let api_shutdown = shutdown_rx.clone();
     let api_handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(api_addr).await.unwrap();
-        info!(addr = %api_addr, "Dashboard API listening");
-        axum::serve(listener, dashboard_app)
+        axum::serve(api_listener, dashboard_app)
             .with_graceful_shutdown(shutdown_signal(api_shutdown))
             .await
             .unwrap();

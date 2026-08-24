@@ -103,7 +103,7 @@ async fn aggregate_verdicts(
 
     // Persist verdicts to DB
     for verdict in &verdicts {
-        if let Err(e) = persist_verdict(&state.pool, verdict).await {
+        if let Err(e) = persist_verdict(&state.pool, verdict, request.app_id).await {
             error!(error = %e, "Failed to persist verdict");
         }
     }
@@ -144,16 +144,17 @@ async fn health() -> Json<serde_json::Value> {
 }
 
 /// Persist a verdict to the verdicts table.
-async fn persist_verdict(pool: &PgPool, verdict: &Verdict) -> Result<(), sqlx::Error> {
+async fn persist_verdict(pool: &PgPool, verdict: &Verdict, app_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
-        INSERT INTO verdicts (id, call_id, axis, path, outcome, confidence, reason, check_name, duration_ms, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        INSERT INTO verdicts (id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, duration_ms, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (id) DO NOTHING
         "#,
     )
     .bind(verdict.id)
     .bind(verdict.call_id)
+    .bind(app_id)
     .bind(verdict.axis.as_str())
     .bind(verdict.path.as_str())
     .bind(verdict.outcome.as_str())
@@ -192,8 +193,9 @@ pub fn spawn_verdict_collector(
                     match msg {
                         Some(payload) => {
                             if let Ok(envelope) = serde_json::from_slice::<EventEnvelope<VerdictPayload>>(&payload) {
+                                let app_id = envelope.app_id;
                                 let verdict = envelope.payload.verdict;
-                                if let Err(e) = persist_verdict(&state.pool, &verdict).await {
+                                if let Err(e) = persist_verdict(&state.pool, &verdict, app_id).await {
                                     error!(error = %e, "Failed to persist collected verdict");
                                 }
                             }

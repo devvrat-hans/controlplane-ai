@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use controlplane_common::events::{subjects, EventEnvelope, VerdictPayload};
+use controlplane_common::events::{EventEnvelope, VerdictPayload};
 use controlplane_platform::messaging::EventSubscriber;
 use tracing::{error, info, warn};
 
@@ -188,7 +188,7 @@ pub fn spawn_audit_subscriber(
     let repository = AuditRepository::new(pool);
 
     tokio::spawn(async move {
-        let mut receiver = match subscriber.subscribe(subjects::VERDICT_FAST).await {
+        let mut receiver = match subscriber.subscribe("controlplane.verdict.*").await {
             Ok(rx) => rx,
             Err(e) => {
                 error!(error = %e, "Audit subscriber: failed to subscribe to verdicts");
@@ -196,7 +196,7 @@ pub fn spawn_audit_subscriber(
             }
         };
 
-        info!("Audit subscriber: listening on '{}'", subjects::VERDICT_FAST);
+        info!("Audit subscriber: listening on 'controlplane.verdict.*' (fast + shadow)");
 
         loop {
             tokio::select! {
@@ -205,21 +205,38 @@ pub fn spawn_audit_subscriber(
                         Some(payload) => {
                             match serde_json::from_slice::<EventEnvelope<VerdictPayload>>(&payload) {
                                 Ok(envelope) => {
+                                    let app_id = envelope.app_id;
                                     let verdict = &envelope.payload.verdict;
-                                    let action = verdict.outcome.as_str();
+                                    let action = verdict.outcome.as_str().to_string();
                                     let metadata = serde_json::json!({
                                         "axis": verdict.axis.as_str(),
                                         "check_name": verdict.check_name,
                                         "confidence": verdict.confidence,
                                     });
+                                    let call_id = verdict.call_id;
+                                    let verdict_id = verdict.id;
 
-                                    if let Err(e) = repository.append(
-                                        verdict.call_id,
-                                        verdict.id,
-                                        action,
-                                        Some(metadata),
-                                    ).await {
-                                        error!(error = %e, "Failed to append audit record");
+                                    // Retry up to 3 times with backoff (verdict row may not exist yet)
+                                    let mut attempts: u64 = 0;
+                                    loop {
+                                        attempts += 1;
+                                        match repository.append(
+                                            call_id,
+                                            verdict_id,
+                                            app_id,
+                                            &action,
+                                            Some(metadata.clone()),
+                                        ).await {
+                                            Ok(_) => break,
+                                            Err(e) if attempts < 3 => {
+                                                warn!(error = %e, attempt = attempts, "Audit insert failed, retrying...");
+                                                tokio::time::sleep(tokio::time::Duration::from_millis(100 * attempts)).await;
+                                            }
+                                            Err(e) => {
+                                                error!(error = %e, "Failed to append audit record after retries");
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                                 Err(e) => {

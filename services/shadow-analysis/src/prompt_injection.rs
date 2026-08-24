@@ -63,11 +63,10 @@ const INJECTION_PATTERNS: &[PatternMatch] = &[
 ];
 
 /// Structural heuristics that indicate injection attempts.
-struct StructuralSignals {
-    instruction_density: f32,
-    has_imperative_commands: bool,
-    role_keyword_count: usize,
-    encoding_signals: usize,
+pub struct StructuralSignals {
+    pub instruction_density: f32,
+    pub role_keyword_count: usize,
+    pub encoding_signals: usize,
 }
 
 impl PromptInjectionDetector {
@@ -86,7 +85,6 @@ impl PromptInjectionDetector {
                 matches: vec![],
                 signals: StructuralSignals {
                     instruction_density: 0.0,
-                    has_imperative_commands: false,
                     role_keyword_count: 0,
                     encoding_signals: 0,
                 },
@@ -244,12 +242,6 @@ fn analyze_structure(text: &str) -> StructuralSignals {
 
     let instruction_density = instruction_count / total_words;
 
-    // Imperative commands
-    let has_imperative = words.iter().any(|w| {
-        let lw = w.to_lowercase();
-        matches!(lw.as_str(), "ignore" | "disregard" | "override" | "bypass" | "reveal" | "execute" | "forget")
-    });
-
     // Role keywords (attempting to redefine the model's role)
     let role_keywords = ["you are now", "act as", "pretend", "you are a", "enter",
         "developer mode", "jailbreak", "dan", "unrestricted", "uncensored",
@@ -266,7 +258,6 @@ fn analyze_structure(text: &str) -> StructuralSignals {
 
     StructuralSignals {
         instruction_density,
-        has_imperative_commands: has_imperative,
         role_keyword_count,
         encoding_signals,
     }
