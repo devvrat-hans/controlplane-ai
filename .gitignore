@@ -40,6 +40,3 @@ gateway.log.stdout
 # Extra files
 controlplane-ai-prd.md
 tasks.txt
-DESIGN.md
-AI Agent Governance and Integration.pdf
-round_2_information.pdf

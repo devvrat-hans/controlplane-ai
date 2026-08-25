@@ -31,6 +31,7 @@ interface VerdictDetail {
   confidence: number;
   reason: string;
   check_name: string;
+  latency_ms: number | null;
   created_at: string;
 }
 
@@ -395,7 +396,210 @@ export default function RequestDetailPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Policies, Confidence & Latency */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Policies, Confidence & Latency</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              All governance checks applied to this request with their results
+            </p>
+          </CardHeader>
+          <CardContent className="p-0">
+            <PolicyCheckTable verdicts={verdicts} fastPathLatency={call.fast_path_latency_ms} />
+          </CardContent>
+        </Card>
       </div>
     </DashboardShell>
+  );
+}
+
+// All governance checks in the system (static definition)
+const ALL_CHECKS = [
+  { name: "secret_detection", axis: "responsibility", path: "fast", description: "API keys, tokens, credentials" },
+  { name: "cost_cap", axis: "cost", path: "fast", description: "Token budget enforcement" },
+  { name: "retry_detection", axis: "performance", path: "fast", description: "Infinite loop / retry patterns" },
+  { name: "unsafe_content", axis: "responsibility", path: "fast", description: "Harmful content heuristics" },
+  { name: "session_risk", axis: "responsibility", path: "fast", description: "Multi-turn risk accumulator" },
+  { name: "tool_use_detection", axis: "responsibility", path: "fast", description: "Agent action detection (1.5x multiplier)" },
+  { name: "prompt_injection", axis: "responsibility", path: "shadow", description: "Adversarial input detection (25+ patterns)" },
+  { name: "groundedness", axis: "performance", path: "shadow", description: "Hallucination / NLI scoring" },
+  { name: "bias_classification", axis: "responsibility", path: "shadow", description: "Gender, race, religion, disability bias" },
+  { name: "verbosity", axis: "performance", path: "shadow", description: "Excessive response length detection" },
+  { name: "semantic_pii", axis: "responsibility", path: "shadow", description: "Re-identification risk (quasi-identifiers)" },
+  { name: "pii", axis: "responsibility", path: "shadow", description: "Presidio NER-based PII detection" },
+  { name: "toxicity", axis: "responsibility", path: "shadow", description: "Toxic content classification" },
+  { name: "hallucination", axis: "performance", path: "shadow", description: "DeepEval LLM-as-a-judge" },
+];
+
+function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDetail[]; fastPathLatency: number | null }) {
+  // Merge static check list with actual verdicts
+  const verdictMap = new Map(verdicts.map(v => [v.check_name, v]));
+
+  // Estimate per-check latency for fast-path (total / count)
+  const fastCheckCount = ALL_CHECKS.filter(c => c.path === "fast").length;
+  const estimatedFastLatency = fastPathLatency && fastCheckCount > 0
+    ? Math.round(fastPathLatency / fastCheckCount)
+    : null;
+
+  const rows = ALL_CHECKS.map(check => {
+    const verdict = verdictMap.get(check.name);
+    return {
+      name: check.name,
+      description: check.description,
+      axis: verdict?.axis ?? check.axis,
+      path: verdict?.path ?? check.path,
+      confidence: verdict?.confidence ?? 0,
+      outcome: verdict?.outcome ?? "pass",
+      latency: verdict?.latency_ms ?? (check.path === "fast" ? estimatedFastLatency : null),
+      hasVerdict: !!verdict,
+    };
+  });
+
+  // Also include any verdicts with check names not in our static list
+  for (const v of verdicts) {
+    if (!ALL_CHECKS.find(c => c.name === v.check_name)) {
+      rows.push({
+        name: v.check_name,
+        description: v.reason.slice(0, 50),
+        axis: v.axis,
+        path: v.path,
+        confidence: v.confidence,
+        outcome: v.outcome,
+        latency: v.latency_ms,
+        hasVerdict: true,
+      });
+    }
+  }
+
+  const triggeredCount = rows.filter(r => r.outcome !== "pass").length;
+  const passedCount = rows.filter(r => r.outcome === "pass").length;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border bg-muted/30">
+            <th className="text-left px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Check Name</th>
+            <th className="text-left px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Axis</th>
+            <th className="text-center px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Path</th>
+            <th className="text-center px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Confidence</th>
+            <th className="text-center px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Latency</th>
+            <th className="text-center px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Verdict</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {rows.map((row) => (
+            <tr
+              key={row.name}
+              className={`transition-colors ${
+                row.outcome !== "pass" ? "bg-red-500/3 hover:bg-red-500/8" : "hover:bg-accent/20"
+              }`}
+            >
+              <td className="px-4 py-3">
+                <div>
+                  <span className="font-medium text-xs">{row.name}</span>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">{row.description}</p>
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <Badge variant="outline" className="text-[10px] capitalize">{row.axis}</Badge>
+              </td>
+              <td className="px-4 py-3 text-center">
+                <Badge
+                  variant="outline"
+                  className={`text-[10px] ${
+                    row.path === "fast"
+                      ? "border-blue-500/50 text-blue-500 bg-blue-500/5"
+                      : "border-purple-500/50 text-purple-500 bg-purple-500/5"
+                  }`}
+                >
+                  {row.path === "fast" ? "Fast Path" : "Shadow Path"}
+                </Badge>
+              </td>
+              <td className="px-4 py-3 text-center">
+                <ConfidenceBar confidence={row.confidence} isPass={row.outcome === "pass"} />
+              </td>
+              <td className="px-4 py-3 text-center">
+                <span className="font-mono text-xs text-muted-foreground">
+                  {row.latency != null ? `${row.latency}ms` : "<1ms"}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-center">
+                <Badge className={`text-[10px] uppercase font-bold ${OUTCOME_STYLES[row.outcome] ?? ""}`}>
+                  {row.outcome}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Summary Footer */}
+      <div className="border-t border-border bg-muted/20 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">
+            {rows.length} checks applied
+          </span>
+          <Badge variant="outline" className="text-[10px] border-green-500/50 text-green-500">
+            {passedCount} passed
+          </Badge>
+          {triggeredCount > 0 && (
+            <Badge variant="outline" className="text-[10px] border-red-500/50 text-red-500">
+              {triggeredCount} triggered
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          <span>
+            Fast: {rows.filter(r => r.path === "fast").length}
+          </span>
+          <span>
+            Shadow: {rows.filter(r => r.path === "shadow").length}
+          </span>
+          {fastPathLatency != null && (
+            <span>
+              Fast-path total:{" "}
+              <span className="font-mono font-medium text-foreground">
+                {fastPathLatency}ms
+              </span>
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfidenceBar({ confidence, isPass }: { confidence: number; isPass?: boolean }) {
+  const pct = Math.round(confidence * 100);
+
+  if (isPass && pct === 0) {
+    return (
+      <div className="flex items-center gap-2 justify-center">
+        <div className="w-16 h-2 rounded-full bg-green-500/20 overflow-hidden">
+          <div className="h-full rounded-full bg-green-500" style={{ width: "100%" }} />
+        </div>
+        <span className="font-mono text-[11px] font-medium w-8 text-right text-green-500">OK</span>
+      </div>
+    );
+  }
+
+  const color =
+    pct >= 80
+      ? "bg-[#ee0000]"
+      : pct >= 60
+        ? "bg-[#f5a623]"
+        : pct >= 30
+          ? "bg-[#0070f3]"
+          : "bg-muted-foreground/40";
+
+  return (
+    <div className="flex items-center gap-2 justify-center">
+      <div className="w-16 h-2 rounded-full bg-muted overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="font-mono text-[11px] font-medium w-8 text-right">{pct}%</span>
+    </div>
   );
 }

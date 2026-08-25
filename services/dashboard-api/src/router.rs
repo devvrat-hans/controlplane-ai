@@ -37,6 +37,7 @@ pub fn dashboard_router(state: DashboardState) -> Router {
         .route("/api/v1/verdicts/recent", get(recent_verdicts))
         .route("/api/v1/stats/overview", get(stats_overview))
         .route("/api/v1/apps", get(list_apps))
+        .route("/api/v1/apps/{app_id}/governance", axum::routing::put(update_governance_level))
         // Policies
         .route("/api/v1/policies/{app_id}", get(get_policy).put(update_policy))
         // Escalations
@@ -57,6 +58,14 @@ pub fn dashboard_router(state: DashboardState) -> Router {
         .route("/api/v1/api-keys/{id}/analytics", get(api_key_analytics))
         // Request detail
         .route("/api/v1/requests/{call_id}", get(get_request_detail))
+        // Detection quality & feedback metrics (Round 2)
+        .route("/api/v1/metrics/detection-quality", get(detection_quality))
+        .route("/api/v1/metrics/feedback-effectiveness", get(feedback_effectiveness))
+        // Session conversation thread (Round 2 — multi-turn context)
+        .route("/api/v1/sessions/{call_id}/thread", get(get_session_thread))
+        // Policy profiles (Round 2 — regulatory/geographic)
+        .route("/api/v1/profiles", get(list_profiles))
+        .route("/api/v1/policies/{app_id}/profile", axum::routing::post(apply_profile))
         // System config
         .route("/api/v1/system/config", get(get_system_config))
         // Health
@@ -122,6 +131,7 @@ struct AppRow {
     id: Uuid,
     name: String,
     team_id: Option<Uuid>,
+    data_governance_level: String,
     created_at: DateTime<Utc>,
 }
 
@@ -147,7 +157,7 @@ async fn recent_verdicts(
         let db_result = if let Some(app_id) = params.app_id {
             if let Some(outcome) = &params.outcome {
                 sqlx::query_as::<_, VerdictRow>(
-                    "SELECT id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, latency_ms, created_at \
+                    "SELECT id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, COALESCE(duration_ms, latency_ms) as latency_ms, created_at \
                      FROM verdicts WHERE app_id = $1 AND outcome = $2 ORDER BY created_at DESC LIMIT $3"
                 )
                 .bind(app_id)
@@ -157,7 +167,7 @@ async fn recent_verdicts(
                 .await
             } else {
                 sqlx::query_as::<_, VerdictRow>(
-                    "SELECT id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, latency_ms, created_at \
+                    "SELECT id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, COALESCE(duration_ms, latency_ms) as latency_ms, created_at \
                      FROM verdicts WHERE app_id = $1 ORDER BY created_at DESC LIMIT $2"
                 )
                 .bind(app_id)
@@ -167,7 +177,7 @@ async fn recent_verdicts(
             }
         } else if let Some(outcome) = &params.outcome {
             sqlx::query_as::<_, VerdictRow>(
-                "SELECT id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, latency_ms, created_at \
+                "SELECT id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, COALESCE(duration_ms, latency_ms) as latency_ms, created_at \
                  FROM verdicts WHERE outcome = $1 ORDER BY created_at DESC LIMIT $2"
             )
             .bind(outcome)
@@ -176,7 +186,7 @@ async fn recent_verdicts(
             .await
         } else {
             sqlx::query_as::<_, VerdictRow>(
-                "SELECT id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, latency_ms, created_at \
+                "SELECT id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, COALESCE(duration_ms, latency_ms) as latency_ms, created_at \
                  FROM verdicts ORDER BY created_at DESC LIMIT $1"
             )
             .bind(limit as i64)
@@ -301,7 +311,7 @@ async fn stats_overview(
             db_open_escalations = open_esc.0;
 
             let avg_latency: (Option<f64>,) = sqlx::query_as(
-                "SELECT AVG(latency_ms::double precision) FROM verdicts WHERE path = 'fast' AND created_at > $1"
+                "SELECT AVG(COALESCE(duration_ms, latency_ms)::double precision) FROM verdicts WHERE path = 'fast' AND created_at > $1"
             )
             .bind(now_minus_24h)
             .fetch_one(pool)
@@ -375,7 +385,7 @@ async fn list_apps(
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     let apps: Vec<AppRow> = sqlx::query_as(
-        "SELECT id, name, team_id, created_at FROM apps ORDER BY name"
+        "SELECT id, name, team_id, COALESCE(data_governance_level, 'medium') as data_governance_level, created_at FROM apps ORDER BY name"
     )
     .fetch_all(pool)
     .await
@@ -840,7 +850,7 @@ async fn cost_timeseries(
 
     let rows: Vec<CostTimeseriesRow> = sqlx::query_as(
         "SELECT \
-            TO_CHAR(date_trunc('hour', created_at), 'HH24:00') as hour, \
+            TO_CHAR(date_trunc('hour', created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as hour, \
             COALESCE(SUM(token_count_input + token_count_output), 0) as tokens, \
             COUNT(*) as requests \
          FROM intercepted_calls \
@@ -861,23 +871,25 @@ async fn cost_anomalies(
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
 
-    // Compare last hour vs average of previous hours
-    let rows: Vec<CostAnomaly> = sqlx::query_as::<_, (Uuid, i64, i64)>(
-        "SELECT app_id, \
-            COALESCE(SUM(token_count_input + token_count_output), 0) as recent_tokens, \
-            COALESCE((SELECT SUM(token_count_input + token_count_output) FROM intercepted_calls \
-                WHERE app_id = ic.app_id AND created_at BETWEEN NOW() - INTERVAL '48 hours' AND NOW() - INTERVAL '1 hour'), 1) as avg_tokens \
+    // Compare last hour vs per-hour average of previous 24 hours
+    let rows: Vec<CostAnomaly> = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT COALESCE(a.name, ic.app_id::text) as app_name, \
+            COALESCE(SUM(ic.token_count_input + ic.token_count_output), 0) as recent_tokens, \
+            GREATEST(COALESCE((SELECT SUM(token_count_input + token_count_output) / GREATEST(COUNT(DISTINCT date_trunc('hour', created_at)), 1) \
+                FROM intercepted_calls \
+                WHERE app_id = ic.app_id AND created_at BETWEEN NOW() - INTERVAL '24 hours' AND NOW() - INTERVAL '1 hour'), 1), 1) as hourly_avg \
          FROM intercepted_calls ic \
-         WHERE created_at > NOW() - INTERVAL '1 hour' \
-         GROUP BY app_id"
+         LEFT JOIN apps a ON a.id = ic.app_id \
+         WHERE ic.created_at > NOW() - INTERVAL '1 hour' \
+         GROUP BY ic.app_id, a.name"
     )
     .fetch_all(pool)
     .await
     .unwrap_or_default()
     .into_iter()
     .filter(|(_, recent, avg)| *avg > 0 && (*recent as f64 / *avg as f64) > 2.0)
-    .map(|(app_id, recent, avg)| CostAnomaly {
-        app_id: app_id.to_string(),
+    .map(|(app_name, recent, avg)| CostAnomaly {
+        app_id: app_name,
         metric: "Token usage surge".to_string(),
         current_value: recent as f64,
         baseline_value: avg as f64,
@@ -938,6 +950,7 @@ struct VerdictDetail {
     confidence: f32,
     reason: String,
     check_name: String,
+    latency_ms: Option<i32>,
     created_at: DateTime<Utc>,
 }
 
@@ -986,7 +999,8 @@ async fn get_request_detail(
 
     // Fetch all verdicts for this call
     let verdicts: Vec<VerdictDetail> = sqlx::query_as(
-        "SELECT id, axis, path, outcome, confidence, reason, check_name, created_at
+        "SELECT id, axis, path, outcome, confidence, reason, check_name, \
+                COALESCE(duration_ms, latency_ms) as latency_ms, created_at
          FROM verdicts WHERE call_id = $1 ORDER BY created_at ASC"
     )
     .bind(call_id)
@@ -1234,9 +1248,14 @@ async fn list_escalations(
     let limit = params.limit.unwrap_or(50).min(200);
     let status = params.status.unwrap_or_else(|| "open".to_string());
 
+    // Priority scoring: higher confidence + responsibility axis + older = higher priority
     let cases: Vec<EscalationRow> = sqlx::query_as(
         "SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
-         FROM escalation_cases WHERE status = $1 ORDER BY created_at DESC LIMIT $2"
+         FROM escalation_cases WHERE status = $1 \
+         ORDER BY \
+           CASE WHEN axis = 'responsibility' THEN 3 WHEN axis = 'performance' THEN 2 ELSE 1 END * confidence DESC, \
+           created_at ASC \
+         LIMIT $2"
     )
     .bind(&status)
     .bind(limit)
@@ -1274,4 +1293,434 @@ async fn resolve_escalation(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     Ok(Json(serde_json::json!({ "status": "resolved", "id": id, "action": body.action })))
+}
+
+// === Detection Quality & Feedback Metrics (Round 2) ===
+
+#[derive(Serialize)]
+struct DetectionQualityMetrics {
+    overall_trust_score: f64,
+    total_escalations_resolved: i64,
+    true_positives: i64,
+    false_positives: i64,
+    precision: f64,
+    checks: Vec<CheckQuality>,
+    trend_7d: Vec<DailyQuality>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct CheckQuality {
+    axis: String,
+    total_flagged: i64,
+    confirmed: i64,
+    overridden: i64,
+    dismissed: i64,
+    precision: f64,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct DailyQuality {
+    day: String,
+    confirmed: i64,
+    overridden: i64,
+    dismissed: i64,
+    precision: f64,
+}
+
+async fn detection_quality(
+    State(state): State<Arc<DashboardState>>,
+) -> Result<Json<DetectionQualityMetrics>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    // Overall resolution counts
+    let overall: (Option<i64>, Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT \
+            COUNT(*) FILTER (WHERE status = 'resolved'), \
+            COUNT(*) FILTER (WHERE resolution = 'confirm'), \
+            COUNT(*) FILTER (WHERE resolution = 'override'), \
+            COUNT(*) FILTER (WHERE resolution = 'dismiss') \
+         FROM escalation_cases"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or((Some(0), Some(0), Some(0), Some(0)));
+
+    let total_resolved = overall.0.unwrap_or(0);
+    let true_positives = overall.1.unwrap_or(0);
+    let overridden = overall.2.unwrap_or(0);
+    let dismissed = overall.3.unwrap_or(0);
+    let false_positives = overridden + dismissed;
+    let precision = if total_resolved > 0 {
+        true_positives as f64 / total_resolved as f64
+    } else {
+        1.0
+    };
+
+    // Per-axis quality breakdown
+    let checks: Vec<CheckQuality> = sqlx::query_as(
+        "SELECT \
+            axis, \
+            COUNT(*) as total_flagged, \
+            COUNT(*) FILTER (WHERE resolution = 'confirm') as confirmed, \
+            COUNT(*) FILTER (WHERE resolution = 'override') as overridden, \
+            COUNT(*) FILTER (WHERE resolution = 'dismiss') as dismissed, \
+            CASE WHEN COUNT(*) FILTER (WHERE status = 'resolved') > 0 \
+                THEN COUNT(*) FILTER (WHERE resolution = 'confirm')::float / \
+                     COUNT(*) FILTER (WHERE status = 'resolved')::float \
+                ELSE 1.0 \
+            END as precision \
+         FROM escalation_cases \
+         GROUP BY axis \
+         ORDER BY axis"
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    // 7-day trend
+    let trend_7d: Vec<DailyQuality> = sqlx::query_as(
+        "SELECT \
+            TO_CHAR(resolved_at, 'YYYY-MM-DD') as day, \
+            COUNT(*) FILTER (WHERE resolution = 'confirm') as confirmed, \
+            COUNT(*) FILTER (WHERE resolution = 'override') as overridden, \
+            COUNT(*) FILTER (WHERE resolution = 'dismiss') as dismissed, \
+            CASE WHEN COUNT(*) > 0 \
+                THEN COUNT(*) FILTER (WHERE resolution = 'confirm')::float / COUNT(*)::float \
+                ELSE 1.0 \
+            END as precision \
+         FROM escalation_cases \
+         WHERE status = 'resolved' AND resolved_at > NOW() - INTERVAL '7 days' \
+         GROUP BY TO_CHAR(resolved_at, 'YYYY-MM-DD') \
+         ORDER BY day"
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    // Trust score: weighted precision (higher weight for more critical axes)
+    let overall_trust_score = (precision * 100.0).round() / 100.0;
+
+    Ok(Json(DetectionQualityMetrics {
+        overall_trust_score,
+        total_escalations_resolved: total_resolved,
+        true_positives,
+        false_positives,
+        precision,
+        checks,
+        trend_7d,
+    }))
+}
+
+#[derive(Serialize)]
+struct FeedbackEffectiveness {
+    patterns_promoted: i64,
+    threshold_adjustments: i64,
+    avg_resolution_time_hours: f64,
+    resolution_distribution: ResolutionDistribution,
+    improvement_indicators: ImprovementIndicators,
+}
+
+#[derive(Serialize)]
+struct ResolutionDistribution {
+    confirm_pct: f64,
+    override_pct: f64,
+    dismiss_pct: f64,
+}
+
+#[derive(Serialize)]
+struct ImprovementIndicators {
+    escalation_rate_trend: String,
+    repeat_flag_rate: f64,
+    reviewer_agreement_rate: f64,
+}
+
+async fn feedback_effectiveness(
+    State(state): State<Arc<DashboardState>>,
+) -> Result<Json<FeedbackEffectiveness>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    // Pattern promotions count
+    let promotions: (Option<i64>,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM pattern_promotions"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or((Some(0),));
+
+    // Resolution distribution
+    let dist: (Option<i64>, Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT \
+            COUNT(*) FILTER (WHERE status = 'resolved'), \
+            COUNT(*) FILTER (WHERE resolution = 'confirm'), \
+            COUNT(*) FILTER (WHERE resolution = 'override'), \
+            COUNT(*) FILTER (WHERE resolution = 'dismiss') \
+         FROM escalation_cases"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or((Some(0), Some(0), Some(0), Some(0)));
+
+    let total = dist.0.unwrap_or(0).max(1) as f64;
+    let confirm = dist.1.unwrap_or(0) as f64;
+    let overridden = dist.2.unwrap_or(0) as f64;
+    let dismissed = dist.3.unwrap_or(0) as f64;
+
+    // Average resolution time
+    let avg_time: (Option<f64>,) = sqlx::query_as(
+        "SELECT AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0) \
+         FROM escalation_cases WHERE status = 'resolved'"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or((None,));
+
+    // Escalation rate trend: compare last 7 days vs previous 7 days
+    let recent: (Option<i64>,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM escalation_cases WHERE created_at > NOW() - INTERVAL '7 days'"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or((Some(0),));
+
+    let previous: (Option<i64>,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM escalation_cases \
+         WHERE created_at BETWEEN NOW() - INTERVAL '14 days' AND NOW() - INTERVAL '7 days'"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or((Some(0),));
+
+    let recent_count = recent.0.unwrap_or(0) as f64;
+    let previous_count = previous.0.unwrap_or(1).max(1) as f64;
+    let trend = if recent_count < previous_count * 0.8 {
+        "improving".to_string()
+    } else if recent_count > previous_count * 1.2 {
+        "worsening".to_string()
+    } else {
+        "stable".to_string()
+    };
+
+    // Repeat flag rate: how often same call_id gets multiple escalations
+    let repeat_rate: (Option<f64>,) = sqlx::query_as(
+        "SELECT CASE WHEN COUNT(DISTINCT call_id) > 0 \
+            THEN 1.0 - (COUNT(DISTINCT call_id)::float / COUNT(*)::float) \
+            ELSE 0.0 END \
+         FROM escalation_cases"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or((Some(0.0),));
+
+    // Reviewer agreement = confirm rate (reviewer agrees with system)
+    let agreement = confirm / total;
+
+    Ok(Json(FeedbackEffectiveness {
+        patterns_promoted: promotions.0.unwrap_or(0),
+        threshold_adjustments: dist.2.unwrap_or(0),
+        avg_resolution_time_hours: (avg_time.0.unwrap_or(0.0) * 10.0).round() / 10.0,
+        resolution_distribution: ResolutionDistribution {
+            confirm_pct: (confirm / total * 100.0).round(),
+            override_pct: (overridden / total * 100.0).round(),
+            dismiss_pct: (dismissed / total * 100.0).round(),
+        },
+        improvement_indicators: ImprovementIndicators {
+            escalation_rate_trend: trend,
+            repeat_flag_rate: (repeat_rate.0.unwrap_or(0.0) * 100.0).round() / 100.0,
+            reviewer_agreement_rate: (agreement * 100.0).round() / 100.0,
+        },
+    }))
+}
+
+// === Session Conversation Thread (Round 2 — Multi-Turn Context) ===
+
+#[derive(Serialize, sqlx::FromRow)]
+struct SessionTurn {
+    id: Uuid,
+    model: String,
+    request_payload: Option<serde_json::Value>,
+    response_payload: Option<serde_json::Value>,
+    token_count_input: Option<i32>,
+    token_count_output: Option<i32>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct SessionThread {
+    session_id: Option<Uuid>,
+    turns: Vec<SessionTurn>,
+    total_turns: usize,
+}
+
+async fn get_session_thread(
+    State(state): State<Arc<DashboardState>>,
+    Path(call_id): Path<Uuid>,
+) -> Result<Json<SessionThread>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    // First, find the session_id for this call
+    let session_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT session_id FROM intercepted_calls WHERE id = $1"
+    )
+    .bind(call_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .flatten();
+
+    let turns = if let Some(sid) = session_id {
+        // Fetch all turns in the same session, ordered chronologically
+        sqlx::query_as::<_, SessionTurn>(
+            "SELECT id, model, request_payload, response_payload, \
+                    token_count_input, token_count_output, created_at \
+             FROM intercepted_calls WHERE session_id = $1 \
+             ORDER BY created_at ASC LIMIT 50"
+        )
+        .bind(sid)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    } else {
+        // No session — just return this single call
+        sqlx::query_as::<_, SessionTurn>(
+            "SELECT id, model, request_payload, response_payload, \
+                    token_count_input, token_count_output, created_at \
+             FROM intercepted_calls WHERE id = $1"
+        )
+        .bind(call_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
+
+    let total_turns = turns.len();
+    Ok(Json(SessionThread { session_id, turns, total_turns }))
+}
+
+// === Policy Profiles (Round 2 — Regulatory/Geographic) ===
+
+#[derive(Serialize, sqlx::FromRow)]
+struct PolicyProfile {
+    id: String,
+    name: String,
+    description: String,
+    geography: String,
+    industry: String,
+    risk_appetite: String,
+    default_thresholds: serde_json::Value,
+    regulations: Vec<String>,
+}
+
+async fn list_profiles(
+    State(state): State<Arc<DashboardState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    let profiles: Vec<PolicyProfile> = sqlx::query_as(
+        "SELECT id, name, description, geography, industry, risk_appetite, default_thresholds, regulations \
+         FROM policy_profiles ORDER BY geography, industry"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    Ok(Json(serde_json::json!({ "profiles": profiles })))
+}
+
+#[derive(Deserialize)]
+struct ApplyProfileBody {
+    profile_id: String,
+}
+
+async fn apply_profile(
+    State(state): State<Arc<DashboardState>>,
+    Path(app_id): Path<String>,
+    Json(body): Json<ApplyProfileBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    let parsed_app_id: Uuid = app_id.parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid app_id".to_string()))?;
+
+    // Verify profile exists and get its thresholds
+    let profile: Option<PolicyProfile> = sqlx::query_as(
+        "SELECT id, name, description, geography, industry, risk_appetite, default_thresholds, regulations \
+         FROM policy_profiles WHERE id = $1"
+    )
+    .bind(&body.profile_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let profile = profile.ok_or((StatusCode::NOT_FOUND, format!("Profile '{}' not found", body.profile_id)))?;
+
+    // Update all policies for this app to use the profile and apply its thresholds
+    let axes = ["performance", "cost", "responsibility"];
+    for axis in &axes {
+        let threshold = profile.default_thresholds.get(axis).cloned()
+            .unwrap_or(serde_json::json!({}));
+
+        sqlx::query(
+            "UPDATE policies SET threshold_config = $1, profile = $2, version = version + 1, updated_at = NOW() \
+             WHERE app_id = $3 AND axis = $4"
+        )
+        .bind(&threshold)
+        .bind(&body.profile_id)
+        .bind(parsed_app_id)
+        .bind(axis)
+        .execute(pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+    }
+
+    Ok(Json(serde_json::json!({
+        "applied": true,
+        "profile": body.profile_id,
+        "app_id": app_id,
+        "message": format!("Applied '{}' profile to app. Thresholds updated for all axes.", profile.name)
+    })))
+}
+
+// === Data Source Governance (Round 2, Task R2.9) ===
+
+#[derive(Deserialize)]
+struct UpdateGovernanceBody {
+    level: String,
+}
+
+async fn update_governance_level(
+    State(state): State<Arc<DashboardState>>,
+    Path(app_id): Path<String>,
+    Json(body): Json<UpdateGovernanceBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    let parsed_app_id: Uuid = app_id.parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid app_id".to_string()))?;
+
+    if !["high", "medium", "low"].contains(&body.level.as_str()) {
+        return Err((StatusCode::BAD_REQUEST, "Level must be 'high', 'medium', or 'low'".to_string()));
+    }
+
+    sqlx::query("UPDATE apps SET data_governance_level = $1 WHERE id = $2")
+        .bind(&body.level)
+        .bind(parsed_app_id)
+        .execute(pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    Ok(Json(serde_json::json!({
+        "app_id": app_id,
+        "data_governance_level": body.level,
+        "note": match body.level.as_str() {
+            "low" => "Low governance = stricter groundedness/hallucination thresholds applied",
+            "high" => "High governance = standard thresholds (well-governed data sources)",
+            _ => "Medium governance = moderate thresholds"
+        }
+    })))
 }

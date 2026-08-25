@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use controlplane_common::types::{Axis, Outcome};
 
-use crate::checks::{CostCapCheck, RetryDetector, SecretDetector, UnsafeContentCheck};
+use crate::checks::{CostCapCheck, RetryDetector, SecretDetector, SessionRiskAccumulator, ToolUseDetector, UnsafeContentCheck};
 use crate::policy_cache::PolicyCache;
 
 /// The total fast-path budget. If checks exceed this, remaining checks are skipped.
@@ -15,6 +15,8 @@ pub struct FastPathEngine {
     cost_cap: CostCapCheck,
     retry_detector: RetryDetector,
     unsafe_check: UnsafeContentCheck,
+    session_risk: SessionRiskAccumulator,
+    tool_use_detector: ToolUseDetector,
 }
 
 impl FastPathEngine {
@@ -25,6 +27,8 @@ impl FastPathEngine {
             cost_cap: CostCapCheck::new(),
             retry_detector: RetryDetector::new(),
             unsafe_check: UnsafeContentCheck::new(),
+            session_risk: SessionRiskAccumulator::new(),
+            tool_use_detector: ToolUseDetector::new(),
         }
     }
 
@@ -52,13 +56,13 @@ impl FastPathEngine {
             worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
             if verdict.outcome == Outcome::Block {
                 verdicts.push(verdict);
-                return FastPathResult { outcome: worst_outcome, edits, verdicts };
+                return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
             }
             verdicts.push(verdict);
         }
 
         if start.elapsed().as_millis() > FAST_PATH_BUDGET_MS {
-            return FastPathResult { outcome: worst_outcome, edits, verdicts };
+            return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
         }
 
         // --- Check 2: Secret/PII detection ---
@@ -71,7 +75,7 @@ impl FastPathEngine {
         }
 
         if start.elapsed().as_millis() > FAST_PATH_BUDGET_MS {
-            return FastPathResult { outcome: worst_outcome, edits, verdicts };
+            return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
         }
 
         // --- Check 3: Cost cap enforcement ---
@@ -79,13 +83,13 @@ impl FastPathEngine {
             worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
             if verdict.outcome == Outcome::Block {
                 verdicts.push(verdict);
-                return FastPathResult { outcome: worst_outcome, edits, verdicts };
+                return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
             }
             verdicts.push(verdict);
         }
 
         if start.elapsed().as_millis() > FAST_PATH_BUDGET_MS {
-            return FastPathResult { outcome: worst_outcome, edits, verdicts };
+            return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
         }
 
         // --- Check 4: Retry/loop detection ---
@@ -96,7 +100,36 @@ impl FastPathEngine {
             }
         }
 
-        FastPathResult { outcome: worst_outcome, edits, verdicts }
+        // --- Check 5: Tool/function call detection (agent risk) ---
+        let tool_result = self.tool_use_detector.check(response_body);
+        let has_tool_use = tool_result.has_tool_use;
+        if let Some(verdict) = tool_result.verdict {
+            worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
+            verdicts.push(verdict);
+        }
+
+        // --- Check 6: Session risk accumulator (multi-turn compounding risk) ---
+        if let Some(key) = session_key {
+            // Record risk event if any non-pass verdict was issued
+            if worst_outcome != Outcome::Pass {
+                self.session_risk.record_risk_event(key);
+            }
+            // Check if session has accumulated too many risk events
+            if let Some(verdict) = self.session_risk.check(key) {
+                worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
+                verdicts.push(verdict);
+            }
+        }
+
+        // Apply action risk multiplier: if tool use is detected, boost all
+        // non-pass verdict confidences by 1.5x (actions have higher downstream impact)
+        if has_tool_use {
+            for v in &mut verdicts {
+                v.confidence = ToolUseDetector::apply_risk_multiplier(v.confidence, true);
+            }
+        }
+
+        FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use }
     }
 
     /// Periodic cleanup of retry detection state.
@@ -109,6 +142,7 @@ pub struct FastPathResult {
     pub outcome: Outcome,
     pub edits: Vec<ResponseEdit>,
     pub verdicts: Vec<FastPathVerdict>,
+    pub has_tool_use: bool,
 }
 
 #[derive(Clone)]

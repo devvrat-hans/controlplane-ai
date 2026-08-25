@@ -32,6 +32,18 @@ interface RequestDetail {
   }>;
 }
 
+interface SessionThread {
+  session_id: string | null;
+  turns: Array<{
+    id: string;
+    model: string;
+    request_payload: unknown;
+    response_payload: unknown;
+    created_at: string;
+  }>;
+  total_turns: number;
+}
+
 interface EscalationCase {
   id: string;
   verdict_id: string;
@@ -250,6 +262,12 @@ function CaseDetail({
     enabled: !!data.call_id,
   });
 
+  const { data: sessionThread } = useQuery<SessionThread>({
+    queryKey: ["session-thread", data.call_id],
+    queryFn: () => fetchApi<SessionThread>(`/api/v1/sessions/${data.call_id}/thread`),
+    enabled: !!data.call_id,
+  });
+
   const userMessage = extractUserMessage(requestDetail?.call?.request_payload);
   const assistantMessage = extractAssistantMessage(requestDetail?.call?.response_payload);
 
@@ -305,13 +323,73 @@ function CaseDetail({
           </div>
         )}
 
+        {/* Conversation Thread (multi-turn context) */}
+        {sessionThread && sessionThread.total_turns > 1 && (
+          <div className="space-y-2">
+            <span className="text-xs text-muted-foreground">
+              Conversation Thread ({sessionThread.total_turns} turns)
+            </span>
+            <div className="max-h-48 overflow-y-auto space-y-1.5 rounded-md border border-border p-2">
+              {sessionThread.turns.map((turn, i) => {
+                const turnUser = extractUserMessage(turn.request_payload);
+                const turnAssistant = extractAssistantMessage(turn.response_payload);
+                const isCurrent = turn.id === data.call_id;
+                return (
+                  <div
+                    key={turn.id}
+                    className={`text-[11px] rounded p-1.5 ${isCurrent ? "bg-orange-500/10 border border-orange-500/20" : "bg-muted/20"}`}
+                  >
+                    <span className="text-muted-foreground">Turn {i + 1}{isCurrent ? " (flagged)" : ""}:</span>
+                    {turnUser && <p className="text-blue-400 truncate">Q: {turnUser}</p>}
+                    {turnAssistant && <p className="text-green-400 truncate">A: {turnAssistant}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Reason */}
         <div>
           <span className="text-xs text-muted-foreground">Verdict Reason</span>
+          {data.reason.includes("Compound risk") && (
+            <div className="mt-1 mb-1 flex items-center gap-2">
+              <Badge variant="destructive" className="text-[10px]">
+                Compound Risk
+              </Badge>
+              <span className="text-[10px] text-muted-foreground">
+                Multiple axes triggered — overlapping risk detected
+              </span>
+            </div>
+          )}
           <p className="mt-1 text-sm rounded-md border border-border bg-muted/30 p-2">
             {data.reason}
           </p>
         </div>
+
+        {/* All triggered checks from verdicts */}
+        {requestDetail?.verdicts && requestDetail.verdicts.length > 1 && (
+          <div>
+            <span className="text-xs text-muted-foreground">All Triggered Checks</span>
+            <div className="mt-1 space-y-1">
+              {requestDetail.verdicts
+                .filter(v => v.outcome !== "pass")
+                .map(v => (
+                  <div key={v.id} className="flex items-center gap-2 text-xs rounded bg-muted/30 px-2 py-1">
+                    <Badge variant="outline" className="text-[9px] capitalize">{v.axis}</Badge>
+                    <span className="font-mono text-[10px]">{v.check_name}</span>
+                    <span className="text-muted-foreground ml-auto">{(v.confidence * 100).toFixed(0)}%</span>
+                    <Badge
+                      variant={v.outcome === "block" ? "destructive" : "outline"}
+                      className="text-[9px]"
+                    >
+                      {v.outcome}
+                    </Badge>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
 
         {/* IDs */}
         <div className="space-y-1 text-[10px] font-mono text-muted-foreground">

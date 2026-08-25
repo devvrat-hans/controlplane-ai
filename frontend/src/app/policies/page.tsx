@@ -49,6 +49,7 @@ const DEFAULT_THRESHOLDS: PolicyThresholds = {
 interface AppInfo {
   id: string;
   name: string;
+  data_governance_level?: string;
 }
 
 export default function PoliciesPage() {
@@ -70,6 +71,45 @@ export default function PoliciesPage() {
   const [thresholds, setThresholds] = useState<PolicyThresholds>(DEFAULT_THRESHOLDS);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Regulatory profiles (R2.2)
+  interface PolicyProfileInfo {
+    id: string;
+    name: string;
+    description: string;
+    geography: string;
+    industry: string;
+    risk_appetite: string;
+    default_thresholds: Record<string, unknown>;
+    regulations: string[];
+  }
+  const [profiles, setProfiles] = useState<PolicyProfileInfo[]>([]);
+  const [applyingProfile, setApplyingProfile] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v1/profiles`)
+      .then((r) => r.json())
+      .then((data: { profiles: PolicyProfileInfo[] }) => setProfiles(data.profiles || []))
+      .catch(() => {});
+  }, []);
+
+  const applyProfile = async (profileId: string) => {
+    if (!selectedApp || !isEditable) return;
+    setApplyingProfile(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/policies/${selectedApp}/profile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile_id: profileId }),
+      });
+      if (res.ok) {
+        await loadPolicy(selectedApp);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      }
+    } catch { /* API might not be running */ }
+    finally { setApplyingProfile(false); }
+  };
 
   const loadPolicy = async (appId: string) => {
     try {
@@ -163,6 +203,39 @@ export default function PoliciesPage() {
             <Badge variant="outline" className="text-xs">
               {enabledCount}/10 checks enabled
             </Badge>
+            {(() => {
+              const currentApp = apps.find(a => a.id === selectedApp);
+              const level = currentApp?.data_governance_level || "medium";
+              const levelColors: Record<string, string> = {
+                high: "bg-green-500/10 text-green-500 border-green-500/30",
+                medium: "bg-yellow-500/10 text-yellow-500 border-yellow-500/30",
+                low: "bg-red-500/10 text-red-500 border-red-500/30",
+              };
+              return (
+                <select
+                  value={level}
+                  onChange={async (e) => {
+                    if (!isEditable || !selectedApp) return;
+                    const newLevel = e.target.value;
+                    try {
+                      await fetch(`${API_BASE}/api/v1/apps/${selectedApp}/governance`, {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ level: newLevel }),
+                      });
+                      setApps(apps.map(a => a.id === selectedApp ? { ...a, data_governance_level: newLevel } : a));
+                    } catch { /* ignore */ }
+                  }}
+                  disabled={!isEditable}
+                  className={`text-[10px] font-medium px-2 py-1 rounded-md border cursor-pointer ${levelColors[level] || ""}`}
+                  title="Data governance level — lower = stricter thresholds"
+                >
+                  <option value="high">Gov: High</option>
+                  <option value="medium">Gov: Medium</option>
+                  <option value="low">Gov: Low</option>
+                </select>
+              );
+            })()}
             <Select
               value={selectedApp}
               onValueChange={(v) => setSelectedApp(v)}
@@ -171,6 +244,47 @@ export default function PoliciesPage() {
             />
           </div>
         </div>
+
+        {/* Regulatory Profile Selector (R2.2) */}
+        {profiles.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">Regulatory Profile</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-xs text-muted-foreground mb-3">
+                Apply a preset profile to configure thresholds for specific regulatory environments.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {profiles.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => applyProfile(p.id)}
+                    disabled={!isEditable || applyingProfile}
+                    className="text-left rounded-md border border-border p-3 hover:border-primary/50 hover:bg-muted/50 transition-colors disabled:opacity-50"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{p.name}</span>
+                      <Badge variant="outline" className="text-[10px]">
+                        {p.risk_appetite}
+                      </Badge>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">
+                      {p.description}
+                    </p>
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {p.regulations.slice(0, 3).map((r) => (
+                        <Badge key={r} variant="secondary" className="text-[9px]">
+                          {r}
+                        </Badge>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Thresholds */}
         <Card>

@@ -61,6 +61,10 @@ pub async fn proxy_handler(
     let model_in_body = state.provider.extract_model(&request_body)
         .unwrap_or_else(|| state.default_model.clone());
 
+    // Extract session_id for multi-turn tracking (R2.1)
+    // Priority: explicit "session_id" field > X-Session-Id header > derived from messages hash
+    let session_id: Option<Uuid> = extract_session_id(&request_body, &headers);
+
     // Forward to upstream
     let upstream_path = state.provider.rewrite_path(&path, &model_in_body);
     let upstream_url = format!("{}{}", state.upstream_base_url, upstream_path);
@@ -137,14 +141,15 @@ pub async fn proxy_handler(
 
     // Persist intercepted_call to DB (must happen before verdict events)
     let app_id = state.default_app_id;
+    let has_tool_use = fast_path_result.has_tool_use;
     if let Some(ref pool) = state.pool {
         let req_json: Option<serde_json::Value> = serde_json::from_slice(&request_body).ok();
         let resp_json: Option<serde_json::Value> = serde_json::from_slice(&response_body).ok();
         if let Err(e) = sqlx::query(
             "INSERT INTO intercepted_calls \
              (id, correlation_id, app_id, model, request_payload, response_payload, \
-              token_count_input, token_count_output, upstream_latency_ms, fast_path_latency_ms, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) \
+              token_count_input, token_count_output, upstream_latency_ms, fast_path_latency_ms, session_id, has_tool_use, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW()) \
              ON CONFLICT (id) DO NOTHING"
         )
         .bind(correlation_id)
@@ -157,6 +162,8 @@ pub async fn proxy_handler(
         .bind(output_tokens)
         .bind(upstream_latency_ms)
         .bind(fast_path_latency_ms)
+        .bind(session_id)
+        .bind(has_tool_use)
         .execute(pool)
         .await {
             warn!(error = %e, correlation_id = %correlation_id, "Failed to persist intercepted_call");
@@ -335,6 +342,7 @@ async fn run_fast_path_safe(
                 block_reason: result.verdicts.iter()
                     .find(|v| v.outcome == Outcome::Block)
                     .map(|v| v.reason.clone()),
+                has_tool_use: result.has_tool_use,
             }
         }
         Ok(Err(e)) => {
@@ -353,6 +361,7 @@ struct FastPathSafeResult {
     edits: Vec<controlplane_fast_path::engine::ResponseEdit>,
     verdicts: Vec<Verdict>,
     block_reason: Option<String>,
+    has_tool_use: bool,
 }
 
 impl FastPathSafeResult {
@@ -362,8 +371,59 @@ impl FastPathSafeResult {
             edits: Vec::new(),
             verdicts: Vec::new(),
             block_reason: None,
+            has_tool_use: false,
         }
     }
+}
+
+/// Extract session_id for multi-turn conversation tracking.
+/// Checks: 1) explicit "session_id" in request body, 2) X-Session-Id header,
+/// 3) derives a stable ID from the first user message (for repeat conversations).
+fn extract_session_id(request_body: &[u8], headers: &axum::http::HeaderMap) -> Option<Uuid> {
+    // 1. Check for explicit session_id in request body
+    if let Ok(body) = serde_json::from_slice::<serde_json::Value>(request_body) {
+        if let Some(sid) = body.get("session_id").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = Uuid::parse_str(sid) {
+                return Some(parsed);
+            }
+        }
+    }
+
+    // 2. Check X-Session-Id header
+    if let Some(header_val) = headers.get("x-session-id") {
+        if let Ok(s) = header_val.to_str() {
+            if let Ok(parsed) = Uuid::parse_str(s) {
+                return Some(parsed);
+            }
+        }
+    }
+
+    // 3. If messages array has >1 message, derive session from first user message hash
+    // This groups multi-turn conversations that share the same opening message
+    if let Ok(body) = serde_json::from_slice::<serde_json::Value>(request_body) {
+        if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
+            if messages.len() > 1 {
+                if let Some(first_content) = messages.first()
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    first_content.hash(&mut hasher);
+                    let hash = hasher.finish();
+                    let bytes = hash.to_le_bytes();
+                    let mut uuid_bytes = [0u8; 16];
+                    uuid_bytes[..8].copy_from_slice(&bytes);
+                    uuid_bytes[8..].copy_from_slice(&bytes);
+                    uuid_bytes[6] = (uuid_bytes[6] & 0x0F) | 0x40; // version 4
+                    uuid_bytes[8] = (uuid_bytes[8] & 0x3F) | 0x80; // variant
+                    return Some(Uuid::from_bytes(uuid_bytes));
+                }
+            }
+        }
+    }
+
+    None
 }
 
 async fn publish_call_async(

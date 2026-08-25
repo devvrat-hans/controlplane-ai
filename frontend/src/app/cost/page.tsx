@@ -63,12 +63,17 @@ export default function CostPage() {
   const projectedMonthly = totalSpend * 30;
   const baseline = projectedMonthly * 0.85;
 
-  // Build chart data from real timeseries
-  const chartData = (timeseries ?? []).map((t) => ({
-    hour: t.hour,
-    tokens: t.tokens,
-    requests: t.requests,
-  }));
+  // Build chart data from real timeseries, converting UTC to local time
+  const chartData = (timeseries ?? []).map((t) => {
+    const date = new Date(t.hour);
+    const localHour = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    const localDay = date.toLocaleDateString([], { day: "numeric", month: "short" });
+    return {
+      hour: `${localDay} ${localHour}`,
+      tokens: t.tokens,
+      requests: t.requests,
+    };
+  });
 
   return (
     <DashboardShell>
@@ -119,11 +124,14 @@ export default function CostPage() {
                 {anomalies.map((a, i) => (
                   <div
                     key={i}
-                    className="flex items-center justify-between rounded-md border border-border p-2"
+                    className="flex items-center justify-between rounded-md border border-border p-3"
                   >
                     <div className="text-sm">
-                      <span className="font-medium">{a.app_id.slice(0, 8)}</span>
-                      <span className="text-muted-foreground ml-2">{a.metric}</span>
+                      <span className="font-medium">{a.app_id}</span>
+                      <span className="text-muted-foreground ml-2">— {a.metric}</span>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Current: {(a.current_value / 1000).toFixed(1)}K tokens/hr | Baseline: {(a.baseline_value / 1000).toFixed(1)}K tokens/hr
+                      </p>
                     </div>
                     <Badge className="text-xs bg-orange-500/10 text-orange-500 border-orange-500/20">
                       +{a.deviation_pct.toFixed(0)}% above baseline

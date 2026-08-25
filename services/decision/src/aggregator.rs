@@ -28,8 +28,12 @@ impl VerdictAggregator {
         Decision::from_verdicts(call_id, app_id, verdicts, policy_version)
     }
 
-    /// Aggregate with confidence-weighted tie-breaking.
+    /// Aggregate with confidence-weighted tie-breaking and intersection escalation.
     /// Returns (final_outcome, primary_reason, contributing_verdict_ids).
+    ///
+    /// Intersection escalation: when 2+ different axes produce non-pass verdicts,
+    /// escalate even if individual confidences are below threshold. This handles
+    /// overlapping risks (e.g., hallucination + privacy = compound risk).
     pub fn aggregate_with_reasoning(
         &self,
         verdicts: &[Verdict],
@@ -40,6 +44,8 @@ impl VerdictAggregator {
                 primary_reason: "No verdicts received".to_string(),
                 contributing_ids: Vec::new(),
                 confidence: 1.0,
+                compound_risk: false,
+                triggered_axes: Vec::new(),
             };
         }
 
@@ -47,14 +53,50 @@ impl VerdictAggregator {
             .map(|v| v.outcome)
             .fold(Outcome::Pass, Outcome::worst);
 
+        // Collect unique axes that produced non-pass verdicts
+        let mut triggered_axes: Vec<String> = verdicts.iter()
+            .filter(|v| v.outcome != Outcome::Pass)
+            .map(|v| v.axis.as_str().to_string())
+            .collect();
+        triggered_axes.sort();
+        triggered_axes.dedup();
+
+        let compound_risk = triggered_axes.len() >= 2;
+
+        // Intersection escalation: if 2+ axes fire, escalate even if individual
+        // outcomes were just "edit" or low-confidence "escalate"
+        let final_outcome = if compound_risk && worst == Outcome::Pass {
+            Outcome::Escalate
+        } else if compound_risk && worst == Outcome::Edit {
+            // Compound risk upgrades "edit" to "escalate"
+            Outcome::Escalate
+        } else {
+            worst
+        };
+
         // Find the verdict(s) at the worst level with highest confidence
         let contributing: Vec<&Verdict> = verdicts.iter()
-            .filter(|v| v.outcome == worst)
+            .filter(|v| v.outcome != Outcome::Pass)
             .collect();
 
-        let primary = contributing.iter()
-            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap();
+        let primary = if contributing.is_empty() {
+            verdicts.first().unwrap()
+        } else {
+            contributing.iter()
+                .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap()
+        };
+
+        let primary_reason = if compound_risk {
+            format!(
+                "Compound risk: {} axes triggered ({}). {}",
+                triggered_axes.len(),
+                triggered_axes.join(", "),
+                primary.reason
+            )
+        } else {
+            primary.reason.clone()
+        };
 
         let all_non_pass: Vec<Uuid> = verdicts.iter()
             .filter(|v| v.outcome != Outcome::Pass)
@@ -62,10 +104,12 @@ impl VerdictAggregator {
             .collect();
 
         AggregationResult {
-            final_outcome: worst,
-            primary_reason: primary.reason.clone(),
+            final_outcome,
+            primary_reason,
             contributing_ids: all_non_pass,
             confidence: primary.confidence,
+            compound_risk,
+            triggered_axes,
         }
     }
 }
@@ -82,6 +126,8 @@ pub struct AggregationResult {
     pub primary_reason: String,
     pub contributing_ids: Vec<Uuid>,
     pub confidence: f32,
+    pub compound_risk: bool,
+    pub triggered_axes: Vec<String>,
 }
 
 #[cfg(test)]
