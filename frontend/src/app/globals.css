@@ -129,6 +129,38 @@
   html {
     @apply font-sans;
   }
+
+  /* ─── Custom scrollbar ──────────────────────────────────────────────── */
+  /* WebKit (Chrome, Safari, Edge) */
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #d4d4d4;
+    border-radius: 3px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #a3a3a3;
+  }
+  .dark *::-webkit-scrollbar-thumb {
+    background: #333333;
+  }
+  .dark *::-webkit-scrollbar-thumb:hover {
+    background: #555555;
+  }
+
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #d4d4d4 transparent;
+  }
+  .dark * {
+    scrollbar-color: #333333 transparent;
+  }
 }
 
 @layer utilities {

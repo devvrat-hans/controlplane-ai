@@ -54,6 +54,9 @@ pub mod subjects {
     pub const DECISION_FINAL: &str = "controlplane.decision.final";
     pub const ESCALATION_CREATED: &str = "controlplane.escalation.created";
     pub const POLICY_UPDATED: &str = "controlplane.policy.updated";
+    /// Published whenever a reviewer resolves an escalation — carries the captured
+    /// precedent so other services can react to new learning data.
+    pub const FEEDBACK_RECORDED: &str = "controlplane.feedback.recorded";
 }
 
 // =============================================================================

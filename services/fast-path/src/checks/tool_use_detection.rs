@@ -33,6 +33,12 @@ const ACTION_DIRECTIVE_PATTERNS: &[&str] = &[
     "curl -X PUT",
 ];
 
+impl Default for ToolUseDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolUseDetector {
     pub fn new() -> Self {
         Self
@@ -143,8 +149,9 @@ mod tests {
 
     #[test]
     fn risk_multiplier_increases_confidence() {
-        assert_eq!(ToolUseDetector::apply_risk_multiplier(0.6, true), 0.9);
-        assert_eq!(ToolUseDetector::apply_risk_multiplier(0.6, false), 0.6);
-        assert_eq!(ToolUseDetector::apply_risk_multiplier(0.8, true), 1.0); // capped at 1.0
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        assert!(close(ToolUseDetector::apply_risk_multiplier(0.6, true), 0.9));
+        assert!(close(ToolUseDetector::apply_risk_multiplier(0.6, false), 0.6));
+        assert!(close(ToolUseDetector::apply_risk_multiplier(0.8, true), 1.0)); // capped at 1.0
     }
 }

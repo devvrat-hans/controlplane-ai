@@ -58,19 +58,55 @@ export default function PoliciesPage() {
   const [apps, setApps] = useState<AppInfo[]>([]);
   const [selectedApp, setSelectedApp] = useState("");
 
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [policyVersion, setPolicyVersion] = useState<number | null>(null);
+
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/apps`)
       .then((r) => r.json())
       .then((data: AppInfo[]) => {
         setApps(data);
         if (data.length > 0) setSelectedApp(data[0].id);
+        setFetchError(null);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("Failed to load apps:", err);
+        setFetchError("Could not connect to API — is the backend running?");
+      });
   }, []);
 
   const [thresholds, setThresholds] = useState<PolicyThresholds>(DEFAULT_THRESHOLDS);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Policy-wise effectiveness stats (blocks & escalations per check)
+  interface PolicyCheckStat {
+    check_name: string;
+    axis: string;
+    total: number;
+    passes: number;
+    edits: number;
+    escalates: number;
+    blocks: number;
+    confirmed: number;
+    overridden: number;
+    dismissed: number;
+    precision: number;
+  }
+  const [policyStats, setPolicyStats] = useState<PolicyCheckStat[]>([]);
+
+  useEffect(() => {
+    if (!selectedApp) return;
+    const loadStats = () => {
+      fetch(`${API_BASE}/api/v1/stats/policy?app_id=${selectedApp}&window_hours=168`)
+        .then((r) => r.json())
+        .then((data) => setPolicyStats(data.checks || []))
+        .catch((err) => console.error("Failed to load policy stats:", err));
+    };
+    loadStats();
+    const id = setInterval(loadStats, 15000);
+    return () => clearInterval(id);
+  }, [selectedApp]);
 
   // Regulatory profiles (R2.2)
   interface PolicyProfileInfo {
@@ -85,12 +121,13 @@ export default function PoliciesPage() {
   }
   const [profiles, setProfiles] = useState<PolicyProfileInfo[]>([]);
   const [applyingProfile, setApplyingProfile] = useState(false);
+  const [confirmProfile, setConfirmProfile] = useState<PolicyProfileInfo | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/profiles`)
       .then((r) => r.json())
       .then((data: { profiles: PolicyProfileInfo[] }) => setProfiles(data.profiles || []))
-      .catch(() => {});
+      .catch((err) => console.error("Failed to load profiles:", err));
   }, []);
 
   const applyProfile = async (profileId: string) => {
@@ -116,31 +153,37 @@ export default function PoliciesPage() {
       const res = await fetch(`${API_BASE}/api/v1/policies/${appId}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.policies && data.policies.length > 0) {
-          const config = data.policies[0].config;
-          if (config) {
-            setThresholds({
-              block_threshold: config.block_threshold ?? DEFAULT_THRESHOLDS.block_threshold,
-              escalate_threshold: config.escalate_threshold ?? DEFAULT_THRESHOLDS.escalate_threshold,
-              max_tokens_per_request: config.max_tokens_per_request ?? DEFAULT_THRESHOLDS.max_tokens_per_request,
-              retry_max_count: config.retry_max_count ?? DEFAULT_THRESHOLDS.retry_max_count,
-              pii_detection: config.pii_detection ?? DEFAULT_THRESHOLDS.pii_detection,
-              toxicity_detection: config.toxicity_detection ?? DEFAULT_THRESHOLDS.toxicity_detection,
-              bias_detection: config.bias_detection ?? DEFAULT_THRESHOLDS.bias_detection,
-              unsafe_content_enabled: config.unsafe_content_enabled ?? DEFAULT_THRESHOLDS.unsafe_content_enabled,
-              secret_detection_enabled: config.secret_detection_enabled ?? DEFAULT_THRESHOLDS.secret_detection_enabled,
-              prompt_injection_enabled: config.prompt_injection_enabled ?? DEFAULT_THRESHOLDS.prompt_injection_enabled,
-              hallucination_detection_enabled: config.hallucination_detection_enabled ?? DEFAULT_THRESHOLDS.hallucination_detection_enabled,
-              groundedness_enabled: config.groundedness_enabled ?? DEFAULT_THRESHOLDS.groundedness_enabled,
-              verbosity_enabled: config.verbosity_enabled ?? DEFAULT_THRESHOLDS.verbosity_enabled,
-              semantic_pii_enabled: config.semantic_pii_enabled ?? DEFAULT_THRESHOLDS.semantic_pii_enabled,
-            });
-            return;
-          }
+        setPolicyVersion(data.version ?? null);
+        // Canonical merged view across all axis rows — works whether values were
+        // last written by a manual save OR by applying a regulatory profile.
+        const config = data.merged ?? data.policies?.[0]?.config;
+        const checks = config?.checks ?? {};
+        if (config) {
+          setThresholds({
+            block_threshold: config.block_threshold ?? DEFAULT_THRESHOLDS.block_threshold,
+            escalate_threshold: config.escalate_threshold ?? config.groundedness_threshold ?? DEFAULT_THRESHOLDS.escalate_threshold,
+            max_tokens_per_request: config.max_tokens_per_request ?? DEFAULT_THRESHOLDS.max_tokens_per_request,
+            retry_max_count: config.retry_max ?? config.retry_max_count ?? DEFAULT_THRESHOLDS.retry_max_count,
+            pii_detection: checks.pii_detection ?? config.pii_detection ?? DEFAULT_THRESHOLDS.pii_detection,
+            toxicity_detection: checks.toxicity_detection ?? config.toxicity_detection ?? DEFAULT_THRESHOLDS.toxicity_detection,
+            bias_detection: checks.bias_detection ?? config.bias_detection ?? DEFAULT_THRESHOLDS.bias_detection,
+            // Engine-format actions double as kill-switches ("off" = disabled)
+            unsafe_content_enabled:
+              checks.unsafe_content_enabled ?? (config.unsafe_content_enabled ?? (config.unsafe_action ? config.unsafe_action !== "off" : DEFAULT_THRESHOLDS.unsafe_content_enabled)),
+            secret_detection_enabled:
+              checks.secret_detection_enabled ?? (config.secret_detection_enabled ?? (config.pii_action ? config.pii_action !== "off" : DEFAULT_THRESHOLDS.secret_detection_enabled)),
+            prompt_injection_enabled: checks.prompt_injection_enabled ?? config.prompt_injection_enabled ?? DEFAULT_THRESHOLDS.prompt_injection_enabled,
+            hallucination_detection_enabled: checks.hallucination_detection_enabled ?? config.hallucination_detection_enabled ?? DEFAULT_THRESHOLDS.hallucination_detection_enabled,
+            groundedness_enabled: checks.groundedness_enabled ?? config.groundedness_enabled ?? DEFAULT_THRESHOLDS.groundedness_enabled,
+            verbosity_enabled: checks.verbosity_enabled ?? config.verbosity_enabled ?? DEFAULT_THRESHOLDS.verbosity_enabled,
+            semantic_pii_enabled: checks.semantic_pii_enabled ?? config.semantic_pii_enabled ?? DEFAULT_THRESHOLDS.semantic_pii_enabled,
+          });
+          return;
         }
       }
     } catch { /* fall through to defaults */ }
     setThresholds(DEFAULT_THRESHOLDS);
+    setPolicyVersion(null);
   };
 
   const toggle = (key: keyof PolicyThresholds) => {
@@ -168,6 +211,8 @@ export default function PoliciesPage() {
       if (res.ok) {
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
+        // Reload to pick up the new version number
+        loadPolicy(selectedApp);
       }
     } catch {
       // API might not be running
@@ -192,6 +237,11 @@ export default function PoliciesPage() {
   return (
     <DashboardShell>
       <div className="space-y-6">
+        {fetchError && (
+          <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-600">
+            {fetchError}
+          </div>
+        )}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div>
             <h2 className="text-2xl font-bold tracking-tight">Policies</h2>
@@ -203,6 +253,11 @@ export default function PoliciesPage() {
             <Badge variant="outline" className="text-xs">
               {enabledCount}/10 checks enabled
             </Badge>
+            {policyVersion !== null && (
+              <Badge variant="secondary" className="text-xs">
+                v{policyVersion}
+              </Badge>
+            )}
             {(() => {
               const currentApp = apps.find(a => a.id === selectedApp);
               const level = currentApp?.data_governance_level || "medium";
@@ -228,7 +283,7 @@ export default function PoliciesPage() {
                   }}
                   disabled={!isEditable}
                   className={`text-[10px] font-medium px-2 py-1 rounded-md border cursor-pointer ${levelColors[level] || ""}`}
-                  title="Data governance level — lower = stricter thresholds"
+                  title="Data governance level — classifies trust level of data sources"
                 >
                   <option value="high">Gov: High</option>
                   <option value="medium">Gov: Medium</option>
@@ -259,7 +314,7 @@ export default function PoliciesPage() {
                 {profiles.map((p) => (
                   <button
                     key={p.id}
-                    onClick={() => applyProfile(p.id)}
+                    onClick={() => setConfirmProfile(p)}
                     disabled={!isEditable || applyingProfile}
                     className="text-left rounded-md border border-border p-3 hover:border-primary/50 hover:bg-muted/50 transition-colors disabled:opacity-50"
                   >
@@ -285,6 +340,78 @@ export default function PoliciesPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Policy Effectiveness Stats */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-medium">Policy Effectiveness</CardTitle>
+            <Badge variant="outline" className="text-xs">
+              Blocks &amp; escalations per check (7d)
+            </Badge>
+          </CardHeader>
+          <CardContent>
+            {policyStats.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-4 text-center">
+                No verdicts recorded in the selected window yet. Send traffic through the proxy to see policy effectiveness.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-3 text-[10px] uppercase tracking-wider text-muted-foreground/60 font-mono pb-1 border-b border-border/50">
+                  <span>Check</span>
+                  <span className="text-right">Blocked</span>
+                  <span className="text-right">Escalated</span>
+                  <span className="text-right">Edited</span>
+                  <span className="text-right">Passed</span>
+                  <span className="text-right">FP rate</span>
+                </div>
+                {policyStats.map((s) => {
+                  const resolved = s.confirmed + s.overridden + s.dismissed;
+                  const fpRate = resolved > 0 ? (s.overridden + s.dismissed) / resolved : 0;
+                  const fpHigh = resolved >= 3 && fpRate > 0.3;
+                  return (
+                    <div
+                      key={`${s.check_name}-${s.axis}`}
+                      className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-3 items-center text-xs py-1.5 rounded-md hover:bg-muted/30 px-1 -mx-1"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.blocks + s.escalates > 0 ? "bg-orange-400" : "bg-emerald-400"}`} />
+                        <span className="font-medium truncate">{s.check_name}</span>
+                        <Badge variant="outline" className="text-[9px] px-1 py-0 hidden sm:inline-flex">{s.axis}</Badge>
+                      </div>
+                      <span className={`text-right font-mono tabular-nums ${s.blocks > 0 ? "text-red-400 font-semibold" : "text-muted-foreground/40"}`}>
+                        {s.blocks}
+                      </span>
+                      <span className={`text-right font-mono tabular-nums ${s.escalates > 0 ? "text-orange-400 font-semibold" : "text-muted-foreground/40"}`}>
+                        {s.escalates}
+                      </span>
+                      <span className={`text-right font-mono tabular-nums ${s.edits > 0 ? "text-blue-400" : "text-muted-foreground/40"}`}>
+                        {s.edits}
+                      </span>
+                      <span className="text-right font-mono tabular-nums text-muted-foreground/50">
+                        {s.passes}
+                      </span>
+                      <span
+                        className={`text-right font-mono tabular-nums ${
+                          resolved === 0
+                            ? "text-muted-foreground/30"
+                            : fpHigh
+                              ? "text-red-400 font-semibold"
+                              : "text-emerald-400"
+                        }`}
+                        title={resolved > 0 ? `${s.confirmed} confirmed / ${s.overridden} overridden / ${s.dismissed} dismissed` : "No resolutions yet"}
+                      >
+                        {resolved === 0 ? "—" : `${Math.round(fpRate * 100)}%`}
+                      </span>
+                    </div>
+                  );
+                })}
+                <p className="text-[10px] text-muted-foreground/50 pt-2 border-t border-border/50">
+                  <strong>FP rate</strong> = (overridden + dismissed) / total resolved. A high FP rate means this check is flagging too much good content — consider raising thresholds or disabling the check.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Thresholds */}
         <Card>
@@ -538,6 +665,39 @@ export default function PoliciesPage() {
           )}
         </div>
       </div>
+
+      {/* Profile apply confirmation dialog */}
+      {confirmProfile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px]" onClick={() => setConfirmProfile(null)}>
+          <div className="w-[380px] rounded-xl border border-border bg-card p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold mb-2">Apply {confirmProfile.name}?</h3>
+            <p className="text-xs text-muted-foreground mb-4">
+              This will overwrite your current thresholds with the <strong>{confirmProfile.name}</strong> profile defaults.
+              Existing checks and kill-switches will be updated. You can always save a new version afterward.
+            </p>
+            <div className="flex flex-wrap gap-1 mb-4">
+              {confirmProfile.regulations.map((r) => (
+                <Badge key={r} variant="secondary" className="text-[9px]">{r}</Badge>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmProfile(null)}
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { applyProfile(confirmProfile.id); setConfirmProfile(null); }}
+                disabled={applyingProfile}
+                className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {applyingProfile ? "Applying..." : "Apply Profile"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardShell>
   );
 }

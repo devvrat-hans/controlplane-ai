@@ -431,9 +431,12 @@ dependencies = [
  "controlplane-common",
  "controlplane-platform",
  "futures",
+ "hex",
  "jsonwebtoken",
+ "rand 0.8.8",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
  "tokio",
@@ -598,6 +601,7 @@ name = "controlplane-shadow-analysis"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-nats",
  "chrono",
  "controlplane-common",

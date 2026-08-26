@@ -8,7 +8,9 @@ impl Interceptor {
     }
 
     pub fn capture(&self, _call: &InterceptedCall) {
-        // Will be implemented: persist + publish to shadow path
+        // SCAFFOLD: capture logic lives in the proxy handler directly.
+        // This struct is reserved for future extraction if capture needs to
+        // be decoupled from the proxy request path.
     }
 }
 

@@ -175,7 +175,7 @@ fn derive_pattern_key(verdict: &ShadowVerdict) -> String {
             if let Some(cats) = extract_categories_from_reason(&verdict.reason) {
                 format!("bias:{}", cats)
             } else {
-                format!("bias:general")
+                "bias:general".to_string()
             }
         }
         "unsafe_content" => {
@@ -183,17 +183,17 @@ fn derive_pattern_key(verdict: &ShadowVerdict) -> String {
             if let Some(keyword) = extract_keyword_from_reason(&verdict.reason) {
                 format!("unsafe:{}", keyword)
             } else {
-                format!("unsafe:general")
+                "unsafe:general".to_string()
             }
         }
         "groundedness" => {
-            format!("groundedness:low_score")
+            "groundedness:low_score".to_string()
         }
         "verbosity" => {
-            format!("verbosity:excessive")
+            "verbosity:excessive".to_string()
         }
         "semantic_pii" => {
-            format!("semantic_pii:reidentification")
+            "semantic_pii:reidentification".to_string()
         }
         other => {
             format!("{}:general", other)

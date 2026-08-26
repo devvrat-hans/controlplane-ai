@@ -89,6 +89,16 @@ export default function RequestDetailPage() {
   const [resolving, setResolving] = useState(false);
   const [resolveReason, setResolveReason] = useState("");
 
+  // Learned context: precedents retrieved from past reviewer decisions
+  interface Precedent {
+    id: string;
+    axis: string;
+    reviewer_action: string;
+    reviewer_reason: string | null;
+    score: number;
+  }
+  const [precedents, setPrecedents] = useState<Precedent[]>([]);
+
   useEffect(() => {
     if (!callId) return;
     fetch(`${API_BASE}/api/v1/requests/${callId}`)
@@ -99,6 +109,11 @@ export default function RequestDetailPage() {
       .then((d) => setData(d))
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
+
+    fetch(`${API_BASE}/api/v1/feedback/precedents?call_id=${callId}`)
+      .then((r) => (r.ok ? r.json() : { precedents: [] }))
+      .then((d) => setPrecedents(d.precedents || []))
+      .catch((err) => console.error("Failed to load precedents:", err));
   }, [callId]);
 
   const handleResolve = async (resolution: string) => {
@@ -108,7 +123,7 @@ export default function RequestDetailPage() {
       await fetch(`${API_BASE}/api/v1/escalations/${data.escalation.id}/resolve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resolution, reason: resolveReason || `Admin ${resolution}` }),
+        body: JSON.stringify({ action: resolution, reason: resolveReason || `Admin ${resolution}` }),
       });
       // Refresh data
       const res = await fetch(`${API_BASE}/api/v1/requests/${callId}`);
@@ -159,6 +174,16 @@ export default function RequestDetailPage() {
             {verdicts.length} verdict{verdicts.length !== 1 ? "s" : ""}
           </Badge>
         </div>
+
+        {/* Lifecycle Timeline */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Request Lifecycle</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <LifecycleTimeline call={call} verdicts={verdicts} auditRecords={audit_records} escalation={escalation} />
+          </CardContent>
+        </Card>
 
         {/* Call Overview */}
         <Card>
@@ -235,6 +260,45 @@ export default function RequestDetailPage() {
           </Card>
         </div>
 
+        {/* Learned Context — precedents from the reviewer feedback loop */}
+        {precedents.length > 0 && (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="text-sm font-medium">Learned Context</CardTitle>
+              <Badge variant="outline" className="text-[10px]">
+                {precedents.length} precedent{precedents.length !== 1 ? "s" : ""} consulted
+              </Badge>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Past reviewer decisions on content similar to this response, automatically retrieved from the retraining store.
+              </p>
+              {precedents.map((p) => (
+                <div key={p.id} className="flex items-center gap-3 text-xs rounded-md border border-border bg-muted/20 px-3 py-2">
+                  <Badge
+                    variant="outline"
+                    className={`text-[9px] capitalize shrink-0 ${
+                      p.reviewer_action === "confirm"
+                        ? "border-green-500/40 text-green-500"
+                        : p.reviewer_action === "override"
+                          ? "border-yellow-500/40 text-yellow-500"
+                          : ""
+                    }`}
+                  >
+                    {p.reviewer_action}
+                  </Badge>
+                  {p.reviewer_reason && (
+                    <span className="italic text-muted-foreground truncate flex-1">"{p.reviewer_reason}"</span>
+                  )}
+                  <span className="font-mono text-[10px] text-muted-foreground shrink-0">
+                    {Math.round(p.score * 100)}% similar
+                  </span>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
+
         {/* Verdicts */}
         <Card>
           <CardHeader>
@@ -279,28 +343,59 @@ export default function RequestDetailPage() {
             {audit_records.length === 0 ? (
               <p className="text-sm text-muted-foreground p-4">No audit records</p>
             ) : (
-              <div className="divide-y divide-border">
-                {audit_records.map((a) => (
-                  <div key={a.id} className="px-4 py-3 hover:bg-accent/30 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <Badge className={`text-[10px] capitalize ${OUTCOME_STYLES[a.action_taken] ?? ""}`}>
-                        {a.action_taken}
-                      </Badge>
-                      <span className="text-[10px] text-muted-foreground">{new Date(a.created_at).toLocaleString()}</span>
-                      {a.metadata?.axis && (
-                        <Badge variant="outline" className="text-[10px]">{a.metadata.axis}</Badge>
-                      )}
-                      {a.metadata?.check_name && (
-                        <span className="text-xs">{a.metadata.check_name}</span>
-                      )}
-                    </div>
-                    <div className="mt-2 text-[10px] font-mono text-muted-foreground/60 space-y-0.5">
-                      <p>Record: {a.record_hash.slice(0, 16)}...</p>
-                      <p>Prev:   {a.prev_hash.slice(0, 16)}...</p>
+              <>
+                {/* Visual hash chain timeline */}
+                {audit_records.length > 1 && (
+                  <div className="px-4 py-3 border-b border-border bg-muted/30">
+                    <p className="text-[10px] text-muted-foreground mb-2 font-medium">Hash Chain</p>
+                    <div className="flex items-center gap-0 overflow-x-auto">
+                      {audit_records.map((a, i) => (
+                        <div key={a.id} className="flex items-center">
+                          <div className="group relative">
+                            <div className={`h-6 w-6 rounded-full border-2 flex items-center justify-center text-[8px] font-mono cursor-pointer
+                              ${a.action_taken === "pass" ? "border-green-500 bg-green-500/10" :
+                                a.action_taken === "block" ? "border-red-500 bg-red-500/10" :
+                                a.action_taken === "escalate" ? "border-purple-500 bg-purple-500/10" :
+                                "border-blue-500 bg-blue-500/10"}`}>
+                              {i + 1}
+                            </div>
+                            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 hidden group-hover:block z-10 whitespace-nowrap rounded bg-popover border border-border px-2 py-1 text-[9px] font-mono shadow-md">
+                              {a.record_hash.slice(0, 20)}…
+                            </div>
+                          </div>
+                          {i < audit_records.length - 1 && (
+                            <div className="w-8 h-px bg-border" />
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
-              </div>
+                )}
+
+                {/* Audit record list */}
+                <div className="divide-y divide-border">
+                  {audit_records.map((a) => (
+                    <div key={a.id} className="px-4 py-3 hover:bg-accent/30 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <Badge className={`text-[10px] capitalize ${OUTCOME_STYLES[a.action_taken] ?? ""}`}>
+                          {a.action_taken}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground">{new Date(a.created_at).toLocaleString()}</span>
+                        {a.metadata?.axis && (
+                          <Badge variant="outline" className="text-[10px]">{a.metadata.axis}</Badge>
+                        )}
+                        {a.metadata?.check_name && (
+                          <span className="text-xs">{a.metadata.check_name}</span>
+                        )}
+                      </div>
+                      <div className="mt-2 text-[10px] font-mono text-muted-foreground/60 space-y-0.5">
+                        <p>Record: {a.record_hash.slice(0, 16)}...</p>
+                        <p>Prev:   {a.prev_hash.slice(0, 16)}...</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -431,6 +526,56 @@ const ALL_CHECKS = [
   { name: "toxicity", axis: "responsibility", path: "shadow", description: "Toxic content classification" },
   { name: "hallucination", axis: "performance", path: "shadow", description: "DeepEval LLM-as-a-judge" },
 ];
+
+function LifecycleTimeline({
+  call,
+  verdicts,
+  auditRecords,
+  escalation,
+}: {
+  call: CallDetail;
+  verdicts: VerdictDetail[];
+  auditRecords: AuditDetail[];
+  escalation: EscalationDetail | null;
+}) {
+  const hasEscalation = !!escalation;
+  const hasBlock = verdicts.some(v => v.outcome === "block");
+  const hasEdit = verdicts.some(v => v.outcome === "edit");
+  const finalOutcome = hasBlock ? "block" : hasEdit ? "edit" : escalation ? "escalate" : "pass";
+
+  const steps = [
+    { label: "Captured", sub: `${call.model}`, done: true, color: "bg-blue-500" },
+    { label: "Fast-Path", sub: verdicts.filter(v => v.path === "fast").length > 0 ? `${verdicts.filter(v => v.path === "fast").length} checks` : "skipped", done: true, color: "bg-emerald-500" },
+    { label: "Shadow", sub: verdicts.filter(v => v.path === "shadow").length > 0 ? `${verdicts.filter(v => v.path === "shadow").length} checks` : "pending", done: verdicts.some(v => v.path === "shadow"), color: "bg-purple-500" },
+    { label: "Decision", sub: finalOutcome, done: true, color: finalOutcome === "pass" ? "bg-blue-500" : finalOutcome === "block" ? "bg-red-500" : finalOutcome === "escalate" ? "bg-purple-500" : "bg-amber-500" },
+    { label: "Audit", sub: auditRecords.length > 0 ? "recorded" : "pending", done: auditRecords.length > 0, color: "bg-emerald-500" },
+    { label: "Resolved", sub: escalation?.status ?? (hasEscalation ? "pending" : "n/a"), done: escalation?.status === "resolved", color: escalation?.status === "resolved" ? "bg-emerald-500" : "bg-muted" },
+  ];
+
+  return (
+    <div className="flex items-center gap-0 overflow-x-auto py-2">
+      {steps.map((step, i) => (
+        <div key={step.label} className="flex items-center">
+          <div className="group relative flex flex-col items-center">
+            <div className={`h-8 w-8 rounded-full border-2 flex items-center justify-center text-[10px] font-bold ${
+              step.done ? `${step.color} border-transparent text-white` : "border-border bg-muted text-muted-foreground"
+            }`}>
+              {i + 1}
+            </div>
+            <span className="text-[10px] font-medium mt-1.5 whitespace-nowrap">{step.label}</span>
+            <span className="text-[9px] text-muted-foreground whitespace-nowrap capitalize">{step.sub}</span>
+            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 hidden group-hover:block z-10 whitespace-nowrap rounded bg-popover border border-border px-2 py-1 text-[9px] shadow-md">
+              {step.label}: {step.sub}
+            </div>
+          </div>
+          {i < steps.length - 1 && (
+            <div className={`w-8 sm:w-12 h-0.5 ${step.done ? "bg-emerald-500/40" : "bg-border"} mx-1 mt-[-20px]`} />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDetail[]; fastPathLatency: number | null }) {
   // Merge static check list with actual verdicts

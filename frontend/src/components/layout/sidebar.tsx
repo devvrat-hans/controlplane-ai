@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 const navigation = [
   { name: "Overview", href: "/", icon: LayoutDashboardIcon },
   { name: "Live Stream", href: "/stream", icon: ActivityIcon },
+  { name: "Requests", href: "/requests", icon: ClipboardIcon },
+  { name: "Analytics", href: "/analytics", icon: BarChartIcon },
   { name: "Policies", href: "/policies", icon: ShieldIcon },
   { name: "Escalations", href: "/escalations", icon: AlertTriangleIcon },
   { name: "Cost", href: "/cost", icon: DollarSignIcon },
@@ -75,6 +77,9 @@ export function Sidebar() {
         </div>
         <p className="mt-1 text-[10px] text-muted-foreground/60 font-mono">
           v0.7.0
+        </p>
+        <p className="mt-2 text-[9px] text-muted-foreground/40">
+          Press <kbd className="px-1 py-0.5 rounded border border-border/50 bg-muted/50 font-mono text-[8px]">?</kbd> for shortcuts
         </p>
       </div>
     </aside>
@@ -285,6 +290,24 @@ function SettingsIcon({ className }: { className?: string }) {
   );
 }
 
+function ClipboardIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect width="8" height="4" x="8" y="2" rx="1" ry="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    </svg>
+  );
+}
+
 function XIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -299,6 +322,25 @@ function XIcon({ className }: { className?: string }) {
     >
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function BarChartIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <line x1="12" x2="12" y1="20" y2="10" />
+      <line x1="18" x2="18" y1="20" y2="4" />
+      <line x1="6" x2="6" y1="20" y2="14" />
     </svg>
   );
 }

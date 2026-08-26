@@ -57,6 +57,7 @@ impl PolicyAction {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "block" => PolicyAction::Block,

@@ -16,7 +16,7 @@ use controlplane_proxy::handler::ProxyState;
 use controlplane_common::create_provider;
 
 use controlplane_dashboard_api::{dashboard_router, spawn_sse_bridge, DashboardState, InMemoryVerdictStore, SseBroadcaster};
-use controlplane_shadow_analysis::{ShadowConfig, ShadowWorker};
+use controlplane_shadow_analysis::{ShadowConfig, ShadowWorker, ToggleStore, spawn_toggle_reloader};
 use controlplane_decision::{spawn_verdict_collector, DecisionServiceState, VerdictAggregator, PolicyEngine};
 use controlplane_cost_accounting::spawn_cost_tracker;
 use controlplane_escalation::spawn_escalation_listener;
@@ -146,6 +146,7 @@ async fn main() -> Result<()> {
         pool: pool.clone(),
         broadcaster: broadcaster.clone(),
         in_memory: verdict_store,
+        publisher: Some(publisher.clone()),
     };
     let dashboard_app = dashboard_router(dashboard_state);
     let api_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.dashboard_api_port).parse()?;
@@ -164,7 +165,9 @@ async fn main() -> Result<()> {
 
     // ─── Background Workers ──────────────────────────────────────────────
 
-    // Shadow analysis worker
+    // ─── Shadow analysis worker ──────────────────────────────────────
+    // Shared toggle store: Policies page enable/disable switches hot-reload
+    let toggle_store = ToggleStore::default();
     let shadow_config = ShadowConfig {
         provider: config.upstream_provider,
         ..ShadowConfig::default()
@@ -173,7 +176,8 @@ async fn main() -> Result<()> {
         subscriber.clone(),
         publisher.clone(),
         shadow_config,
-    );
+    )
+    .with_toggles(toggle_store.clone());
     let shadow_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
         shadow_worker.run(shadow_shutdown).await;
@@ -189,6 +193,19 @@ async fn main() -> Result<()> {
             shutdown_rx.clone(),
         );
         info!("Policy reloader started");
+
+        // Instant fast-path reload on policy update events (no 30s poll wait)
+        let reload_metrics = Arc::new(controlplane_fast_path::ReloadMetrics::default());
+        controlplane_fast_path::spawn_nats_reload_trigger(
+            fast_path_engine.policy_cache.clone(),
+            db_pool.clone(),
+            subscriber.clone(),
+            reload_metrics,
+            None,
+        );
+
+        // Shadow check toggles: load from policies table, hot-reload on updates
+        spawn_toggle_reloader(db_pool.clone(), toggle_store.clone(), subscriber.clone(), shutdown_rx.clone());
 
         // Decision service (aggregates verdicts from fast+shadow paths)
         let decision_state = Arc::new(DecisionServiceState {

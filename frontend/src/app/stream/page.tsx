@@ -281,7 +281,7 @@ export default function LiveStreamPage() {
                 </p>
               </div>
             ) : (
-              <div className="divide-y divide-border max-h-[calc(100vh-300px)] overflow-y-auto">
+              <div className="divide-y divide-border">
                 {filteredVerdicts.map((v) => (
                   <VerdictRow
                     key={v.id}

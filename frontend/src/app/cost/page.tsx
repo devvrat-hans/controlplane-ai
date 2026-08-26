@@ -19,11 +19,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { fetchApi } from "@/lib/api";
 
+interface ModelCost {
+  model: string;
+  tokens: number;
+  cost_usd: number;
+}
+
 interface CostSummary {
   total_tokens: number;
   total_cost_usd: number;
   request_count: number;
   avg_tokens_per_request: number;
+  by_model: ModelCost[];
 }
 
 interface CostTimeseries {
@@ -59,6 +66,13 @@ export default function CostPage() {
     refetchInterval: 30000,
   });
 
+  interface LatencyBucket { hour: string; avg_fast_path_ms: number; p99_fast_path_ms: number; sample_count: number; }
+  const { data: latencyData } = useQuery<LatencyBucket[]>({
+    queryKey: ["latency-timeseries"],
+    queryFn: () => fetchApi<LatencyBucket[]>("/api/v1/metrics/latency-timeseries"),
+    refetchInterval: 30000,
+  });
+
   const totalSpend = summary?.total_cost_usd ?? 0;
   const projectedMonthly = totalSpend * 30;
   const baseline = projectedMonthly * 0.85;
@@ -90,11 +104,13 @@ export default function CostPage() {
           <SummaryCard
             title="Total Spend Today"
             value={`$${totalSpend.toFixed(2)}`}
+            subtitle="estimated"
             loading={summaryLoading}
           />
           <SummaryCard
             title="Projected Monthly"
             value={`$${projectedMonthly.toFixed(0)}`}
+            subtitle="estimated"
             loading={summaryLoading}
           />
           <SummaryCard
@@ -211,6 +227,47 @@ export default function CostPage() {
           </Card>
         </div>
 
+        {/* Response Time Histogram */}
+        {latencyData && latencyData.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">Response Time Distribution (24h)</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-4 mb-3">
+                <div className="text-sm">
+                  <span className="text-muted-foreground">avg </span>
+                  <span className="font-mono font-bold">{latencyData[latencyData.length - 1]?.avg_fast_path_ms.toFixed(1)}ms</span>
+                </div>
+                <div className="text-sm">
+                  <span className="text-muted-foreground">p99 </span>
+                  <span className="font-mono font-bold">{latencyData[latencyData.length - 1]?.p99_fast_path_ms.toFixed(1)}ms</span>
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart
+                  data={latencyData.map(d => {
+                    const date = new Date(d.hour);
+                    return {
+                      time: date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+                      avg: d.avg_fast_path_ms,
+                      p99: d.p99_fast_path_ms,
+                    };
+                  })}
+                >
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                  <XAxis dataKey="time" fontSize={10} tickCount={6} />
+                  <YAxis fontSize={10} />
+                  <Tooltip formatter={(value) => [`${Number(value).toFixed(1)}ms`, ""]} />
+                  <Legend />
+                  <Bar dataKey="avg" fill="#3b82f6" radius={[2, 2, 0, 0]} name="Avg" />
+                  <Bar dataKey="p99" fill="#f5a623" radius={[2, 2, 0, 0]} name="P99" />
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Cost details */}
         <Card>
           <CardHeader>
@@ -241,6 +298,57 @@ export default function CostPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Per-model cost breakdown with bar chart */}
+        {summary && summary.by_model && summary.by_model.length > 0 && (
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">Cost by Model</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {summary.by_model
+                    .sort((a, b) => b.cost_usd - a.cost_usd)
+                    .map((m) => (
+                      <div key={m.model} className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="font-mono text-sm font-medium truncate max-w-[150px]">{m.model}</div>
+                          <Badge variant="outline" className="text-xs">
+                            {(m.tokens / 1000).toFixed(1)}K tokens
+                          </Badge>
+                        </div>
+                        <div className="text-right">
+                          <span className="font-mono text-sm font-bold">${m.cost_usd.toFixed(4)}</span>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">Token Distribution</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart
+                    data={summary.by_model
+                      .sort((a, b) => b.tokens - a.tokens)
+                      .map(m => ({ name: m.model.length > 15 ? m.model.slice(0, 15) + '...' : m.model, tokens: m.tokens, cost: m.cost_usd }))}
+                    layout="vertical"
+                  >
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                    <XAxis type="number" fontSize={10} />
+                    <YAxis type="category" dataKey="name" fontSize={10} width={120} />
+                    <Tooltip formatter={(value, name) => [name === "tokens" ? `${(Number(value) / 1000).toFixed(1)}K` : `$${Number(value).toFixed(4)}`, name === "tokens" ? "Tokens" : "Cost"]} />
+                    <Bar dataKey="tokens" fill="#3b82f6" radius={[0, 4, 4, 0]} name="tokens" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
     </DashboardShell>
   );
@@ -249,11 +357,13 @@ export default function CostPage() {
 function SummaryCard({
   title,
   value,
+  subtitle,
   variant,
   loading,
 }: {
   title: string;
   value: string;
+  subtitle?: string;
   variant?: "warning" | "success";
   loading?: boolean;
 }) {
@@ -275,7 +385,12 @@ function SummaryCard({
         {loading ? (
           <div className="h-7 w-20 animate-pulse rounded bg-muted" />
         ) : (
-          <p className={`text-2xl font-bold ${color}`}>{value}</p>
+          <div>
+            <p className={`text-2xl font-bold ${color}`}>{value}</p>
+            {subtitle && (
+              <p className="text-[10px] text-muted-foreground mt-0.5 italic">{subtitle}</p>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>

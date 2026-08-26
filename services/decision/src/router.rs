@@ -58,6 +58,9 @@ struct AggregateResponse {
     primary_reason: String,
     contributing_verdict_count: usize,
     applied_policy_version: Option<i32>,
+    /// Precedent IDs from the reviewer-override learning store that were
+    /// consulted for this decision (auditable explainability).
+    consulted_precedents: Vec<Uuid>,
 }
 
 async fn aggregate_verdicts(
@@ -91,7 +94,28 @@ async fn aggregate_verdicts(
     let policy = state.policy_engine.load_policy(request.app_id).await;
 
     // Aggregate verdicts
-    let result = state.aggregator.aggregate_with_reasoning(&verdicts);
+    let mut result = state.aggregator.aggregate_with_reasoning(&verdicts);
+
+    // --- Feedback RAG: retrieve similar past reviewer decisions and annotate ---
+    let mut consulted_precedents: Vec<Uuid> = Vec::new();
+    if let Some(response_text) =
+        fetch_call_response_text(&state.pool, request.call_id).await
+    {
+        let precedents = crate::feedback::find_similar_precedents(
+            &state.pool,
+            Some(request.app_id),
+            &response_text,
+            3,
+            0.3,
+        )
+        .await;
+        let (annotation, ids) =
+            crate::feedback::annotate_from_precedents(result.final_outcome.as_str(), &precedents);
+        consulted_precedents = ids;
+        if !annotation.is_empty() {
+            result.primary_reason.push_str(&annotation);
+        }
+    }
 
     // Produce DecisionRecord
     let decision = Decision::from_verdicts(
@@ -136,7 +160,26 @@ async fn aggregate_verdicts(
         primary_reason: result.primary_reason,
         contributing_verdict_count: result.contributing_ids.len(),
         applied_policy_version: Some(policy.version),
+        consulted_precedents,
     }))
+}
+
+/// Fetch a text representation of this call's response payload for similarity
+/// matching. Fails open (None) on any error.
+async fn fetch_call_response_text(pool: &PgPool, call_id: Uuid) -> Option<String> {
+    let payload: Option<Option<serde_json::Value>> = sqlx::query_scalar(
+        "SELECT response_payload FROM intercepted_calls WHERE id = $1"
+    )
+    .bind(call_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    payload.flatten().map(|v| {
+        let s = v.to_string();
+        s.chars().take(4000).collect()
+    })
 }
 
 async fn health() -> Json<serde_json::Value> {

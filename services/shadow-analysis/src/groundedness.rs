@@ -108,7 +108,7 @@ fn sentence_overlap_score(response: &str, context: &str) -> f32 {
 
 /// Split text into sentences (simple heuristic: split on `.`, `!`, `?`).
 fn split_sentences(text: &str) -> Vec<&str> {
-    text.split(|c| c == '.' || c == '!' || c == '?')
+    text.split(['.', '!', '?'])
         .map(|s| s.trim())
         .filter(|s| s.len() > 5)
         .collect()

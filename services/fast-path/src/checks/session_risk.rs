@@ -22,6 +22,12 @@ struct SessionRiskEntry {
 const SESSION_RISK_THRESHOLD: u32 = 3;
 const SESSION_WINDOW_SECS: u64 = 3600; // 1 hour
 
+impl Default for SessionRiskAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionRiskAccumulator {
     pub fn new() -> Self {
         Self {

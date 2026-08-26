@@ -30,6 +30,45 @@ export function Header() {
   const router = useRouter();
   const [user, setUser] = useState<UserInfo | null>(null);
   const [selectedApp, setSelectedApp] = useState("all");
+  const [apiHealthy, setApiHealthy] = useState<boolean | null>(null);
+  const [sseConnected, setSseConnected] = useState(false);
+  const [notifications, setNotifications] = useState<{id: string; type: string; reason: string; time: string}[]>([]);
+  const [showNotifs, setShowNotifs] = useState(false);
+
+  // Live health check
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/health`, { signal: AbortSignal.timeout(3000) });
+        setApiHealthy(res.ok);
+      } catch {
+        setApiHealthy(false);
+      }
+    };
+    checkHealth();
+    const id = setInterval(checkHealth, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  // SSE connection monitor + live notifications
+  useEffect(() => {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+    const es = new EventSource(`${apiBase}/api/v1/stream`);
+    es.onopen = () => setSseConnected(true);
+    es.onerror = () => setSseConnected(false);
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.outcome === "block" || data.outcome === "escalate") {
+          setNotifications((prev) => [
+            { id: data.id ?? Date.now().toString(), type: data.outcome, reason: data.reason ?? data.check_name ?? "", time: new Date().toLocaleTimeString() },
+            ...prev,
+          ].slice(0, 20));
+        }
+      } catch { /* ignore non-JSON */ }
+    };
+    return () => { es.close(); setSseConnected(false); };
+  }, []);
 
   useEffect(() => {
     const stored = sessionStorage.getItem("cp-user");
@@ -80,12 +119,58 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Health */}
+        {/* Live health + SSE status */}
         <div className="flex items-center gap-2 rounded-full border border-border px-3 py-1.5 bg-background">
-          <div className="h-2 w-2 rounded-full bg-emerald-500" />
+          <div className={`h-2 w-2 rounded-full ${apiHealthy === false ? "bg-red-500" : apiHealthy === null ? "bg-yellow-500 animate-pulse" : "bg-emerald-500"}`} />
           <span className="text-[12px] text-muted-foreground font-mono hidden sm:inline">
-            Healthy
+            {apiHealthy === false ? "Offline" : apiHealthy === null ? "Checking" : "Healthy"}
           </span>
+          <div className={`h-2 w-2 rounded-full ml-1 ${sseConnected ? "bg-emerald-500" : "bg-red-500"}`} title={sseConnected ? "SSE connected" : "SSE disconnected"} />
+          <span className="text-[12px] text-muted-foreground font-mono hidden lg:inline">
+            {sseConnected ? "Live" : "No stream"}
+          </span>
+        </div>
+
+        {/* Notifications bell */}
+        <div className="relative">
+          <button
+            onClick={() => setShowNotifs((s) => !s)}
+            className="relative rounded-full p-2 text-muted-foreground hover:bg-accent hover:text-foreground border border-transparent hover:border-border transition-all"
+            aria-label="Notifications"
+          >
+            <BellIcon className="h-4 w-4" />
+            {notifications.length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center">
+                {Math.min(notifications.length, 99)}
+              </span>
+            )}
+          </button>
+          {showNotifs && (
+            <div className="absolute right-0 top-full mt-2 w-[320px] rounded-xl border border-border bg-card shadow-xl z-50">
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+                <span className="text-xs font-semibold">Recent Alerts</span>
+                {notifications.length > 0 && (
+                  <button onClick={() => setNotifications([])} className="text-[10px] text-muted-foreground hover:text-foreground">Clear all</button>
+                )}
+              </div>
+              <div className="max-h-[300px] overflow-y-auto">
+                {notifications.length === 0 ? (
+                  <p className="py-6 text-center text-xs text-muted-foreground">No recent alerts</p>
+                ) : (
+                  notifications.map((n) => (
+                    <div key={n.id} className="px-4 py-2.5 border-b border-border/50 last:border-0">
+                      <div className="flex items-center gap-2">
+                        <span className={`h-1.5 w-1.5 rounded-full ${n.type === "block" ? "bg-red-500" : "bg-purple-500"}`} />
+                        <span className="text-[11px] font-medium capitalize">{n.type}</span>
+                        <span className="text-[10px] text-muted-foreground ml-auto">{n.time}</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-0.5 truncate">{n.reason}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Theme toggle */}
@@ -205,6 +290,15 @@ function KeyIcon() {
   return (
     <svg className="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4" />
+    </svg>
+  );
+}
+
+function BellIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
     </svg>
   );
 }

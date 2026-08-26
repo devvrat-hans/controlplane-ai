@@ -13,6 +13,7 @@ use crate::groundedness::GroundednessChecker;
 use crate::guardrails_client::GuardrailsClient;
 use crate::prompt_injection::PromptInjectionDetector;
 use crate::semantic_pii::SemanticPiiDetector;
+use crate::toggles::ToggleStore;
 use crate::types::{ShadowConfig, ShadowVerdict};
 use crate::verbosity::VerbosityChecker;
 
@@ -22,6 +23,8 @@ pub struct ShadowWorker {
     subscriber: Arc<dyn EventSubscriber>,
     publisher: Arc<dyn EventPublisher>,
     config: ShadowConfig,
+    /// Hot-reloadable check toggles from the policy engine (Policies page switches).
+    toggles: ToggleStore,
 }
 
 impl ShadowWorker {
@@ -30,7 +33,13 @@ impl ShadowWorker {
         publisher: Arc<dyn EventPublisher>,
         config: ShadowConfig,
     ) -> Self {
-        Self { subscriber, publisher, config }
+        Self { subscriber, publisher, config, toggles: ToggleStore::default() }
+    }
+
+    /// Attach a shared toggle store so Policies page switches take effect live.
+    pub fn with_toggles(mut self, toggles: ToggleStore) -> Self {
+        self.toggles = toggles;
+        self
     }
 
     /// Start the shadow worker loop. Runs until the shutdown signal.
@@ -52,8 +61,9 @@ impl ShadowWorker {
                         Some(payload) => {
                             let publisher = self.publisher.clone();
                             let config = self.config.clone();
+                            let toggles = self.toggles.clone();
                             tokio::spawn(async move {
-                                process_message(&payload, &publisher, &config).await;
+                                process_message(&payload, &publisher, &config, &toggles).await;
                             });
                         }
                         None => {
@@ -77,7 +87,10 @@ async fn process_message(
     payload: &[u8],
     publisher: &Arc<dyn EventPublisher>,
     config: &ShadowConfig,
+    toggles: &ToggleStore,
 ) {
+    // Snapshot the current check toggles (Policies page switches)
+    let toggles = toggles.load();
     let envelope: EventEnvelope<ShadowAnalysisRequest> = match serde_json::from_slice(payload) {
         Ok(env) => env,
         Err(e) => {
@@ -117,51 +130,61 @@ async fn process_message(
             provider.extract_context(&bytes)
         });
 
-    // Run all checks in parallel
+    // Run all enabled checks in parallel (disabled checks are skipped entirely)
     let config_clone = config.clone();
     let response_clone = response_text.clone();
     let context_clone = context_text.clone();
-    let groundedness_handle = tokio::spawn(async move {
-        let checker = GroundednessChecker::new(config_clone.groundedness_threshold);
-        checker.check(&response_clone, context_clone.as_deref())
-    });
+    let groundedness_handle = if toggles.groundedness {
+        Some(tokio::spawn(async move {
+            let checker = GroundednessChecker::new(config_clone.groundedness_threshold);
+            checker.check(&response_clone, context_clone.as_deref())
+        }))
+    } else { None };
 
     let config_clone = config.clone();
     let response_clone = response_text.clone();
-    let bias_handle = tokio::spawn(async move {
-        let classifier = BiasClassifier::new(config_clone.bias_threshold);
-        classifier.check(&response_clone)
-    });
+    let bias_handle = if toggles.bias_classification {
+        Some(tokio::spawn(async move {
+            let classifier = BiasClassifier::new(config_clone.bias_threshold);
+            classifier.check(&response_clone)
+        }))
+    } else { None };
 
     let config_clone = config.clone();
     let response_clone = response_text.clone();
     let prompt_clone = prompt_text.clone();
-    let verbosity_handle = tokio::spawn(async move {
-        let checker = VerbosityChecker::new(config_clone.verbosity_max_ratio, config_clone.verbosity_min_density);
-        checker.check(&response_clone, &prompt_clone)
-    });
+    let verbosity_handle = if toggles.verbosity {
+        Some(tokio::spawn(async move {
+            let checker = VerbosityChecker::new(config_clone.verbosity_max_ratio, config_clone.verbosity_min_density);
+            checker.check(&response_clone, &prompt_clone)
+        }))
+    } else { None };
 
     // Prompt injection detection (runs on the INPUT prompt)
     let config_clone = config.clone();
     let prompt_clone = prompt_text.clone();
-    let prompt_injection_handle = tokio::spawn(async move {
-        let detector = PromptInjectionDetector::new(&config_clone);
-        let result = detector.check(&prompt_clone);
-        detector.to_verdict(&result)
-    });
+    let prompt_injection_handle = if toggles.prompt_injection {
+        Some(tokio::spawn(async move {
+            let detector = PromptInjectionDetector::new(&config_clone);
+            let result = detector.check(&prompt_clone);
+            detector.to_verdict(&result)
+        }))
+    } else { None };
 
     let config_clone = config.clone();
     let response_clone = response_text.clone();
-    let semantic_pii_handle = tokio::spawn(async move {
-        let detector = SemanticPiiDetector::new(
-            config_clone.semantic_pii_min_identifiers,
-            config_clone.semantic_pii_risk_threshold,
-        );
-        detector.check(&response_clone)
-    });
+    let semantic_pii_handle = if toggles.semantic_pii {
+        Some(tokio::spawn(async move {
+            let detector = SemanticPiiDetector::new(
+                config_clone.semantic_pii_min_identifiers,
+                config_clone.semantic_pii_risk_threshold,
+            );
+            detector.check(&response_clone)
+        }))
+    } else { None };
 
     // Run guardrails sidecar checks on RESPONSE (Presidio PII + LLM Guard Toxicity/Bias)
-    let guardrails_pii_handle = if config.pii_enabled {
+    let guardrails_pii_handle = if config.pii_enabled && toggles.pii_detection {
         if let Some(ref url) = config.guardrails_url {
             let client = GuardrailsClient::new(url);
             let text = response_text.clone();
@@ -169,7 +192,7 @@ async fn process_message(
         } else { None }
     } else { None };
 
-    let guardrails_toxicity_handle = if config.toxicity_enabled {
+    let guardrails_toxicity_handle = if config.toxicity_enabled && toggles.toxicity_detection {
         if let Some(ref url) = config.guardrails_url {
             let client = GuardrailsClient::new(url);
             let text = response_text.clone();
@@ -183,17 +206,19 @@ async fn process_message(
     let guardrails_bias_handle: Option<tokio::task::JoinHandle<Option<ShadowVerdict>>> = None;
 
     // DeepEval hallucination check (compares response against context)
-    let guardrails_hallucination_handle = if let Some(ref ctx) = context_text {
+    let guardrails_hallucination_handle = if toggles.hallucination {
+        if let Some(ref ctx) = context_text {
         if let Some(ref url) = config.guardrails_url {
             let client = GuardrailsClient::new(url);
             let text = response_text.clone();
             let context = ctx.clone();
             Some(tokio::spawn(async move { client.scan_hallucination(&text, Some(&context)).await }))
         } else { None }
+    } else { None }
     } else { None };
 
     // Also scan the INPUT prompt for toxicity/bias (catches inappropriate prompts)
-    let input_toxicity_handle = if config.toxicity_enabled && !prompt_text.is_empty() {
+    let input_toxicity_handle = if config.toxicity_enabled && toggles.toxicity_detection && !prompt_text.is_empty() {
         if let Some(ref url) = config.guardrails_url {
             let client = GuardrailsClient::new(url);
             let text = prompt_text.clone();
@@ -201,7 +226,7 @@ async fn process_message(
         } else { None }
     } else { None };
 
-    let input_bias_handle = if config.bias_enabled && !prompt_text.is_empty() {
+    let input_bias_handle = if config.bias_enabled && toggles.bias_detection && !prompt_text.is_empty() {
         if let Some(ref url) = config.guardrails_url {
             let client = GuardrailsClient::new(url);
             let text = prompt_text.clone();
@@ -212,31 +237,41 @@ async fn process_message(
     // Collect all results
     let mut verdicts: Vec<ShadowVerdict> = Vec::new();
 
-    if let Ok(result) = groundedness_handle.await {
-        if let Some(v) = result.verdict {
+    if let Some(handle) = groundedness_handle {
+        if let Ok(result) = handle.await {
+            if let Some(v) = result.verdict {
+                verdicts.push(v);
+            }
+        }
+    }
+
+    if let Some(handle) = bias_handle {
+        if let Ok(result) = handle.await {
+            if let Some(v) = result.verdict {
+                verdicts.push(v);
+            }
+        }
+    }
+
+    if let Some(handle) = verbosity_handle {
+        if let Ok(result) = handle.await {
+            if let Some(v) = result.verdict {
+                verdicts.push(v);
+            }
+        }
+    }
+
+    if let Some(handle) = prompt_injection_handle {
+        if let Ok(Some(v)) = handle.await {
             verdicts.push(v);
         }
     }
 
-    if let Ok(result) = bias_handle.await {
-        if let Some(v) = result.verdict {
-            verdicts.push(v);
-        }
-    }
-
-    if let Ok(result) = verbosity_handle.await {
-        if let Some(v) = result.verdict {
-            verdicts.push(v);
-        }
-    }
-
-    if let Ok(Some(v)) = prompt_injection_handle.await {
-        verdicts.push(v);
-    }
-
-    if let Ok(result) = semantic_pii_handle.await {
-        if let Some(v) = result.verdict {
-            verdicts.push(v);
+    if let Some(handle) = semantic_pii_handle {
+        if let Ok(result) = handle.await {
+            if let Some(v) = result.verdict {
+                verdicts.push(v);
+            }
         }
     }
 

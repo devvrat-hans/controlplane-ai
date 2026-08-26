@@ -70,8 +70,6 @@ struct ResolveRequest {
     /// "confirm", "override", or "dismiss"
     action: String,
     reason: String,
-    /// If action=override, optional new threshold to apply
-    new_threshold: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -154,15 +152,9 @@ async fn resolve_escalation(
     }
 
     let message = match resolution {
-        Resolution::Confirm => "Verdict confirmed. This will feed policy learning.".to_string(),
-        Resolution::Override => {
-            if let Some(threshold) = request.new_threshold {
-                format!("Verdict overridden. New threshold: {:.2}. Policy will be updated.", threshold)
-            } else {
-                "Verdict overridden. Policy thresholds will be adjusted.".to_string()
-            }
-        }
-        Resolution::Dismiss => "Case dismissed as false positive. Marked for model improvement.".to_string(),
+        Resolution::Confirm => "Verdict confirmed. This feeds the reviewer-precedent learning loop.".to_string(),
+        Resolution::Override => "Verdict overridden. Recorded as a reviewer precedent for future similar calls.".to_string(),
+        Resolution::Dismiss => "Case dismissed as false positive. Recorded as a reviewer precedent.".to_string(),
     };
 
     Ok(Json(ResolveResponse {

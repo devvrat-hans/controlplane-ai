@@ -266,11 +266,13 @@ async fn verdict_check_constraints_reject_invalid_values() {
 async fn policy_crud_operations() {
     let pool = skip_without_db!(get_pool().await);
 
-    let app_id: (Uuid,) =
-        sqlx::query_as("SELECT id FROM apps LIMIT 1")
-            .fetch_one(&pool)
-            .await
-            .expect("No apps");
+    // Use an app that has policies (avoid test-created apps without policies)
+    let app_id: (Uuid,) = sqlx::query_as(
+        "SELECT app_id FROM policies GROUP BY app_id ORDER BY COUNT(*) DESC LIMIT 1"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("No apps with policies found");
 
     // Read existing policy
     let policies: Vec<(Uuid, String, serde_json::Value, bool)> = sqlx::query_as(

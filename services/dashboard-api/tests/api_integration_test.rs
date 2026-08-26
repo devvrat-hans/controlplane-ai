@@ -27,6 +27,7 @@ fn make_app(pool: PgPool) -> axum::Router {
         pool: Some(pool),
         broadcaster: SseBroadcaster::new(128),
         in_memory: InMemoryVerdictStore::new(),
+        publisher: None,
     };
     dashboard_router(state)
 }
@@ -290,8 +291,8 @@ async fn list_escalations_returns_cases() {
     let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json["cases"].is_array());
-    let cases = json["cases"].as_array().unwrap();
+    assert!(json["escalations"].is_array());
+    let cases = json["escalations"].as_array().unwrap();
 
     if !cases.is_empty() {
         let c = &cases[0];

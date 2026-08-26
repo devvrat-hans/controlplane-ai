@@ -39,8 +39,10 @@ export default function AuditPage() {
     outcome: "",
     axis: "",
     limit: 25,
+    cursor: "",
   });
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [allRecords, setAllRecords] = useState<AuditRecord[]>([]);
 
   const { data, isLoading } = useQuery<AuditResponse>({
     queryKey: ["audit", filters],
@@ -50,6 +52,7 @@ export default function AuditPage() {
       if (filters.outcome) params.set("outcome", filters.outcome);
       if (filters.axis) params.set("axis", filters.axis);
       params.set("limit", String(filters.limit));
+      if (filters.cursor) params.set("cursor", filters.cursor);
       return fetchApi<AuditResponse>(`/api/v1/audit?${params.toString()}`);
     },
     refetchInterval: 10000,
@@ -68,6 +71,19 @@ export default function AuditPage() {
   };
 
   const records = data?.records ?? [];
+  const nextCursor = data?.next_cursor;
+  const total = data?.total ?? 0;
+
+  const loadMore = () => {
+    if (nextCursor) {
+      setFilters((f) => ({ ...f, cursor: nextCursor }));
+    }
+  };
+
+  const resetFilters = () => {
+    setFilters({ app_id: "", outcome: "", axis: "", limit: 25, cursor: "" });
+    setAllRecords([]);
+  };
 
   return (
     <DashboardShell>
@@ -157,34 +173,101 @@ export default function AuditPage() {
             className="h-8 w-48 rounded-md border border-input bg-background px-2 text-xs"
           />
           <span className="self-center text-xs text-muted-foreground">
-            {records.length} records
+            {records.length} / {total} records
           </span>
+          {filters.cursor && (
+            <button
+              onClick={resetFilters}
+              className="text-xs text-muted-foreground hover:text-foreground underline"
+            >
+              Reset pagination
+            </button>
+          )}
         </div>
+
+        {/* Hash Chain Visual */}
+        {records.length > 1 && (
+          <Card className="bg-muted/20">
+            <CardContent className="py-3 px-4">
+              <div className="flex items-center gap-1 overflow-x-auto">
+                {records.slice(0, 20).map((rec, i) => (
+                  <div key={rec.id} className="flex items-center">
+                    <div
+                      className={`group relative h-5 w-5 rounded-sm border flex items-center justify-center cursor-pointer text-[7px] font-mono transition-colors ${
+                        rec.action_taken === "pass"
+                          ? "border-green-500/40 bg-green-500/10 text-green-500"
+                          : rec.action_taken === "block"
+                            ? "border-red-500/40 bg-red-500/10 text-red-500"
+                            : rec.action_taken === "escalate"
+                              ? "border-purple-500/40 bg-purple-500/10 text-purple-500"
+                              : "border-blue-500/40 bg-blue-500/10 text-blue-500"
+                      }`}
+                      onClick={() => setExpanded(expanded === rec.id ? null : rec.id)}
+                    >
+                      {i + 1}
+                      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 hidden group-hover:block z-10 whitespace-nowrap rounded bg-popover border border-border px-2 py-1 text-[8px] font-mono shadow-md">
+                        {rec.record_hash.slice(0, 16)}…
+                      </div>
+                    </div>
+                    {i < Math.min(records.length, 20) - 1 && (
+                      <div className="w-2 h-px bg-border" />
+                    )}
+                  </div>
+                ))}
+                {records.length > 20 && (
+                  <span className="text-[9px] text-muted-foreground ml-1">+{records.length - 20}</span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Records table */}
         <Card>
           <CardContent className="p-0">
             {isLoading ? (
-              <div className="p-8 text-center">
-                <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <div className="divide-y divide-border">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="px-4 py-3 animate-pulse">
+                    <div className="flex items-center gap-3">
+                      <div className="h-3 w-16 rounded bg-muted" />
+                      <div className="h-5 w-14 rounded bg-muted" />
+                      <div className="h-5 w-16 rounded bg-muted" />
+                      <div className="h-3 flex-1 rounded bg-muted" />
+                      <div className="h-3 w-16 rounded bg-muted" />
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : records.length === 0 ? (
               <div className="p-8 text-center text-sm text-muted-foreground">
                 No audit records found.
               </div>
             ) : (
-              <div className="divide-y divide-border max-h-[calc(100vh-350px)] overflow-y-auto">
-                {records.map((rec) => (
-                  <AuditRow
-                    key={rec.id}
-                    data={rec}
-                    expanded={expanded === rec.id}
-                    onToggle={() =>
-                      setExpanded(expanded === rec.id ? null : rec.id)
-                    }
-                  />
-                ))}
-              </div>
+              <>
+                <div className="divide-y divide-border">
+                  {records.map((rec) => (
+                    <AuditRow
+                      key={rec.id}
+                      data={rec}
+                      expanded={expanded === rec.id}
+                      onToggle={() =>
+                        setExpanded(expanded === rec.id ? null : rec.id)
+                      }
+                    />
+                  ))}
+                </div>
+                {nextCursor && (
+                  <div className="p-3 text-center border-t border-border">
+                    <button
+                      onClick={loadMore}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      Load more records →
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </CardContent>
         </Card>
@@ -266,13 +349,27 @@ function AuditRow({
           <div className="border-t border-border pt-2">
             <span className="text-muted-foreground">Hash Chain:</span>
             <div className="mt-1 font-mono text-[10px] space-y-0.5">
-              <p>
-                <span className="text-muted-foreground">prev:</span>{" "}
-                {data.prev_hash}
+              <p className="flex items-center gap-1">
+                <span className="text-muted-foreground">prev:</span>
+                <code className="break-all">{data.prev_hash}</code>
+                <button
+                  onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(data.prev_hash); }}
+                  className="text-muted-foreground/50 hover:text-foreground shrink-0"
+                  title="Copy"
+                >
+                  📋
+                </button>
               </p>
-              <p>
-                <span className="text-muted-foreground">curr:</span>{" "}
-                {data.record_hash}
+              <p className="flex items-center gap-1">
+                <span className="text-muted-foreground">curr:</span>
+                <code className="break-all">{data.record_hash}</code>
+                <button
+                  onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(data.record_hash); }}
+                  className="text-muted-foreground/50 hover:text-foreground shrink-0"
+                  title="Copy"
+                >
+                  📋
+                </button>
               </p>
             </div>
           </div>

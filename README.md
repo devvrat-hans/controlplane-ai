@@ -1,6 +1,11 @@
 # ControlPlane.ai
 
 > **From AI calls to governed AI calls — in under 10ms.**
+>
+> ![Rust](https://img.shields.io/badge/Rust-1.75+-orange?logo=rust)
+> ![Tests](https://img.shields.io/badge/Tests-276%20%2B%20114-green)
+> ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
+> ![Round 2](https://img.shields.io/badge/Round%202-Complete-brightgreen)
 
 A real-time control layer that sits between any application and any AI model,
 inspecting every response across three axes — **performance** (confidently wrong),
@@ -12,9 +17,25 @@ Built for the **Accenture Innovation Challenge 2026**, Problem Statement 1:
 
 ---
 
-## Quick Start (3 commands)
+## Quick Start
 
-**Mac / Linux:**
+**Mac / Linux (Docker — recommended):**
+
+```bash
+# 1. Install Colima + Docker (one-time)
+brew install colima docker docker-compose
+export COLIMA_HOME=/tmp/colima && mkdir -p /tmp/colima
+colima start --cpu 4 --memory 8 --disk 60
+export DOCKER_HOST=unix:///tmp/colima/default/docker.sock
+
+# 2. Start everything
+docker-compose up --build
+
+# 3. Open the dashboard
+open http://localhost:3000
+```
+
+**Mac / Linux (local — requires Rust, Node, PostgreSQL, Ollama):**
 
 ```bash
 # 1. Start everything (Ollama + Gateway + Frontend)
@@ -227,7 +248,43 @@ pnpm dev
 
 Docker Compose brings up the entire stack (PostgreSQL, Ollama, Gateway, Guardrails sidecar, Frontend) with a single command.
 
+### Prerequisites
+
+| Requirement | Mac | Linux | Windows |
+|---|---|---|---|
+| Docker Engine | [Colima](https://github.com/abiosoft/colima) (`brew install colima`) | `docker` | [Docker Desktop](https://docker.com/products/docker-desktop) |
+| Docker Compose | `brew install docker docker-compose` | included | included |
+
+### Mac Setup (Colima)
+
+Docker commands on Mac use Colima as the VM backend. The default Colima socket path can exceed macOS's `UNIX_PATH_MAX` (104 chars) for users with deep home directories. Use a short `COLIMA_HOME` to avoid this:
+
+```bash
+# 1. Install Colima + Docker CLI (one-time)
+brew install colima docker docker-compose
+
+# 2. Start Colima with enough resources for the build
+export COLIMA_HOME=/tmp/colima
+mkdir -p /tmp/colima
+colima start --cpu 4 --memory 8 --disk 60
+
+# 3. Set Docker to use the Colima socket (required in every terminal)
+export DOCKER_HOST=unix:///tmp/colima/default/docker.sock
+```
+
+> **Tip:** Add the two `export` lines to your `~/.zshrc` or `~/.bashrc` so they persist across sessions.
+
 ### Start the Full Stack
+
+**Mac (with Colima):**
+
+```bash
+export COLIMA_HOME=/tmp/colima
+export DOCKER_HOST=unix:///tmp/colima/default/docker.sock
+docker-compose up --build
+```
+
+**Linux / Windows:**
 
 ```bash
 docker compose up --build
@@ -238,12 +295,20 @@ This builds and starts all services. First run takes a few minutes (Rust compila
 To run in the background (detached):
 
 ```bash
+# Mac
+docker-compose up --build -d
+
+# Linux / Windows
 docker compose up --build -d
 ```
 
 ### Verify Everything is Running
 
 ```bash
+# Mac
+docker-compose ps
+
+# Linux / Windows
 docker compose ps
 ```
 
@@ -253,27 +318,23 @@ All services should show `Up (healthy)`. The model pull container (`ollama-pull`
 
 Once all services are healthy, send requests to the **proxy** at `http://localhost:8900`:
 
-**PowerShell:**
-
-```powershell
-# Simple question (expect PASS verdict)
-$response = Invoke-RestMethod http://localhost:8900/v1/messages -Method Post `
-  -ContentType "application/json" `
-  -Body '{"model":"qwen2.5:1.5b","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":100}'
-
-# See the model's answer:
-$response.choices[0].message.content
-
-# Full JSON response:
-$response | ConvertTo-Json -Depth 5
-```
-
-**curl (Mac/Linux/WSL):**
+**curl (Mac/Linux):**
 
 ```bash
 curl -s http://localhost:8900/v1/messages \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen2.5:1.5b","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":100}' | jq .
+```
+
+**PowerShell (Windows):**
+
+```powershell
+$response = Invoke-RestMethod http://localhost:8900/v1/messages -Method Post `
+  -ContentType "application/json" `
+  -Body '{"model":"qwen2.5:1.5b","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":100}'
+
+$response.choices[0].message.content
+$response | ConvertTo-Json -Depth 5
 ```
 
 **Prompt injection test (triggers ESCALATE verdict):**
@@ -311,13 +372,14 @@ When a session accumulates 3+ risk events, the entire conversation is escalated 
 When you change code in one service, you don't need to rebuild everything:
 
 ```bash
-# Rebuild and restart only the gateway (Rust backend)
+# Mac (docker-compose)
+docker-compose up --build gateway -d
+docker-compose up --build frontend -d
+docker-compose up --build guardrails -d
+
+# Linux / Windows (docker compose)
 docker compose up --build gateway -d
-
-# Rebuild and restart only the frontend
 docker compose up --build frontend -d
-
-# Rebuild and restart only the guardrails sidecar
 docker compose up --build guardrails -d
 ```
 
@@ -328,13 +390,13 @@ The `--build` flag forces Docker to rebuild the image. The `-d` flag runs it det
 If a rebuild isn't picking up changes (stale cache):
 
 ```bash
-# Rebuild without Docker layer cache
-docker compose build --no-cache gateway
-docker compose up gateway -d
+# Mac
+docker-compose build --no-cache gateway
+docker-compose up gateway -d
 
 # Or rebuild everything fresh
-docker compose build --no-cache
-docker compose up -d
+docker-compose build --no-cache
+docker-compose up -d
 ```
 
 ### Restart a Container Without Rebuilding
@@ -342,6 +404,11 @@ docker compose up -d
 If you just need to restart (e.g., to reload environment variables):
 
 ```bash
+# Mac
+docker-compose restart gateway
+docker-compose restart frontend
+
+# Linux / Windows
 docker compose restart gateway
 docker compose restart frontend
 ```
@@ -349,13 +416,14 @@ docker compose restart frontend
 ### View Logs
 
 ```bash
-# All services (follow mode)
+# Mac
+docker-compose logs -f              # All services
+docker-compose logs -f gateway       # Specific service
+docker-compose logs --tail 100 gateway  # Last 100 lines
+
+# Linux / Windows
 docker compose logs -f
-
-# Specific service
 docker compose logs -f gateway
-
-# Last 100 lines of a service
 docker compose logs --tail 100 gateway
 ```
 
@@ -367,6 +435,23 @@ docker compose down
 
 # Stop and remove all data volumes (fresh start)
 docker compose down -v
+```
+
+### Copy-Paste Mac Terminal Setup
+
+Paste this into any new terminal to configure Docker for Colima:
+
+```bash
+export COLIMA_HOME=/tmp/colima
+export DOCKER_HOST=unix:///tmp/colima/default/docker.sock
+```
+
+Or add to `~/.zshrc` for persistence:
+
+```bash
+echo 'export COLIMA_HOME=/tmp/colima' >> ~/.zshrc
+echo 'export DOCKER_HOST=unix:///tmp/colima/default/docker.sock' >> ~/.zshrc
+source ~/.zshrc
 ```
 
 ### Docker Ports Summary
@@ -589,15 +674,32 @@ UPSTREAM_MODEL=qwen2.5:1.5b
 
 | Page | URL | Data Source |
 |------|-----|-------------|
-| Overview | `/` | `GET /api/v1/stats/overview` + detection quality + feedback loop metrics |
+| Overview | `/` | `GET /api/v1/stats/overview` + latency sparkline + detection quality |
 | Live Stream | `/stream` | `GET /api/v1/verdicts/recent` + SSE real-time |
-| Policies | `/policies` | `GET /api/v1/apps` + `GET/PUT /api/v1/policies/{id}` — real DB |
-| Escalations | `/escalations` | `GET /api/v1/escalations` + session thread + Q&A context |
-| Cost | `/cost` | `GET /api/v1/cost/summary` + `/timeseries` + `/anomalies` — real DB |
-| Audit | `/audit` | `GET /api/v1/audit` + `GET /api/v1/audit/verify` — real DB |
-| Settings | `/settings` | `GET /api/v1/system/config` + `GET/PUT /api/v1/users/me` — real DB |
+| Requests | `/requests` | `GET /api/v1/requests` — server-side search, model & outcome filters |
+| Policies | `/policies` | `GET /api/v1/apps` + `GET/PUT /api/v1/policies/{id}` — versioned |
+| Escalations | `/escalations` | `GET /api/v1/escalations` + session risk score + priority badges |
+| Cost | `/cost` | `GET /api/v1/cost/summary` (per-model) + `/timeseries` + `/anomalies` |
+| Audit | `/audit` | `GET /api/v1/audit` + keyset pagination + hash copy-to-clipboard |
+| Settings | `/settings` | `GET /api/v1/system/config` + API key management + profile |
+| API Docs | `/docs` | Interactive endpoint reference for all API routes |
 
 **Zero mock data** — every page fetches real data from PostgreSQL.
+
+### Keyboard Shortcuts
+
+Press `?` anywhere in the dashboard to open the shortcuts modal. Quick navigation:
+
+| Key | Page |
+|-----|------|
+| `1` | Overview |
+| `2` | Live Stream |
+| `3` | Requests |
+| `4` | Policies |
+| `5` | Escalations |
+| `6` | Cost |
+| `7` | Audit |
+| `8` | Settings |
 
 ### Round 2 Additions
 
@@ -605,8 +707,11 @@ UPSTREAM_MODEL=qwen2.5:1.5b
 |---------|-------------|-------------|
 | Detection Quality | `GET /api/v1/metrics/detection-quality` | Trust score, FP/FN rate, precision per axis |
 | Feedback Effectiveness | `GET /api/v1/metrics/feedback-effectiveness` | Pattern promotions, resolution distribution, trend |
+| Latency Sparkline | `GET /api/v1/metrics/latency-timeseries` | Hourly avg + p99 for the overview sparkline |
 | Session Thread | `GET /api/v1/sessions/{call_id}/thread` | Full multi-turn conversation for reviewer context |
 | Priority Escalations | `GET /api/v1/escalations` | Sorted by priority (axis severity × confidence) |
+| Per-Model Costs | `GET /api/v1/cost/summary` | Response includes `by_model` array with per-model token/cost |
+| Request Search | `GET /api/v1/requests?search=&model=&outcome=` | Server-side search, model filter, outcome filter |
 
 ---
 
@@ -625,10 +730,13 @@ UPSTREAM_MODEL=qwen2.5:1.5b
 **All OS (same commands):**
 
 ```bash
-# All Rust tests (246 tests across 14 crates)
-cargo test
+# Preflight check (runs everything)
+bash scripts/preflight.sh
 
-# All frontend tests (109 tests across 10 files)
+# All Rust tests (276 tests across 32 test binaries)
+cargo test --workspace
+
+# All frontend tests (114 tests across 10 files)
 cd frontend && npx vitest run
 
 # Fast-path benchmarks
@@ -636,9 +744,9 @@ cargo bench -p controlplane-fast-path
 ```
 
 **Test Results:**
-- Rust: 246 tests, 0 failures
-- Frontend: 109 tests, 0 failures
-- DB integration: 11 tests, 0 failures
+- Rust: 276 tests, 0 failures (unit + integration + DB)
+- Frontend: 114 tests, 0 failures (unit + integration)
+- DB integration: 4 reviewer-override RAG tests
 
 ### Policies Page Toggle Tests (39 tests)
 
@@ -766,7 +874,16 @@ Get-NetTCPConnection -LocalPort 8900,8080 -ErrorAction SilentlyContinue |
 # Or use Ctrl+C in each terminal
 ```
 
-**Docker (all OS):**
+**Docker (Mac with Colima):**
+
+```bash
+export COLIMA_HOME=/tmp/colima
+export DOCKER_HOST=unix:///tmp/colima/default/docker.sock
+docker-compose down       # Stop containers
+docker-compose down -v    # Stop + remove data volumes
+```
+
+**Docker (Linux / Windows):**
 
 ```bash
 docker compose down       # Stop containers
@@ -775,7 +892,47 @@ docker compose down -v    # Stop + remove data volumes
 
 ---
 
-## 15. Troubleshooting
+## 15. Reviewer-Override RAG Learning Loop
+
+When a reviewer overrides a model decision, the full context is stored as a "precedent" using pg_trgm trigram similarity (no embedding model, no external LLM — deterministic and explainable). Similar future calls retrieve the most relevant precedents and surface them during decision-making.
+
+```text
+Reviewer overrides → Precedent stored → Similar future call → [Learned] annotation
+```
+
+**How it works:**
+1. Reviewer resolves escalation as "override" with a reason
+2. System captures request/response excerpts + resolution in `reviewer_overrides` table
+3. Decision aggregator queries for similar precedents using pg_trgm `similarity()`
+4. Contradicting precedents produce `[Learned] ⚠ 82%-similar past case was overridden` annotation
+5. Outcomes are never silently flipped — human-in-the-loop is preserved
+
+**Precedent retrieval:** `GET /api/v1/feedback/precedents?call_id=<uuid>`
+
+---
+
+## 16. Policy-wise Effectiveness Stats
+
+Per-check breakdown of blocks, escalations, edits, and passes with false-positive rate:
+
+```text
+Policy Effectiveness (7d)
+┌──────────────────────┬─────────┬──────────┬────────┬────────┬────────┐
+│ Check                │ Blocked │ Escalated│ Edited │ Passed │ FP rate│
+├──────────────────────┼─────────┼──────────┼────────┼────────┼────────┤
+│ secret_detection     │    5    │    2     │   12   │   85   │  12%  │
+│ prompt_injection     │    0    │    3     │    0   │   92   │  33%  │
+│ hallucination        │    0    │    1     │    0   │   95   │   —   │
+└──────────────────────┴─────────┴──────────┴────────┴────────┴────────┘
+```
+
+**API:** `GET /api/v1/stats/policy?app_id=<uuid>&window_hours=24`
+
+FP rate = (overrides + dismissals) / total resolved escalations per check. Red highlight when >30%.
+
+---
+
+## 17. Troubleshooting
 
 | Problem | Mac / Linux | Windows (PowerShell) |
 |---------|-------------|---------------------|
@@ -787,12 +944,14 @@ docker compose down -v    # Stop + remove data volumes
 | Dashboard shows no data | Check gateway is running and DB is connected | Check gateway is running and DB is connected |
 | Frontend build fails | `cd frontend && pnpm install` | `cd frontend; pnpm install` |
 | 429 rate limit errors | Switch to Ollama (local, no limits) | Switch to Ollama (local, no limits) |
+| Docker can't connect (Mac) | `export DOCKER_HOST=unix:///tmp/colima/default/docker.sock` | N/A |
 | Docker permission denied | `sudo docker compose up` | Run PowerShell as Administrator |
+| Colima not running | `export COLIMA_HOME=/tmp/colima && colima start --cpu 4 --memory 8 --disk 60` | N/A |
 | Cargo build slow | First build compiles all deps (~2min) | First build compiles all deps (~3min) |
 
 ---
 
-## 16. Round 2: Real-World Complexities Addressed
+## 18. Round 2: Real-World Complexities Addressed
 
 This section maps each real-world complexity from the problem statement to the concrete implementation in ControlPlane.ai.
 
@@ -932,7 +1091,7 @@ Architecture is designed for horizontal scale:
 
 ---
 
-## 17. License
+## 19. License
 
 Apache-2.0. This repository is a hackathon prototype; all data is synthetic.
 

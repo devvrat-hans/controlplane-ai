@@ -14,15 +14,9 @@ impl CostCapCheck {
     pub fn check(&self, token_count_output: Option<i32>, rules: &FastPathRuleSet) -> Option<FastPathVerdict> {
         let start = std::time::Instant::now();
 
-        let max_tokens = match rules.max_tokens_per_request {
-            Some(cap) => cap,
-            None => return None,
-        };
+        let max_tokens = rules.max_tokens_per_request?;
 
-        let tokens = match token_count_output {
-            Some(t) => t,
-            None => return None,
-        };
+        let tokens = token_count_output?;
 
         let duration_ms = start.elapsed().as_millis() as u32;
 

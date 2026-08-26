@@ -36,6 +36,8 @@ fn build_proxy_state(upstream_url: &str, provider_kind: ProviderKind) -> Arc<Pro
         http_client: reqwest::Client::new(),
         fast_path,
         publisher: bus,
+        pool: None,
+        default_app_id: uuid::Uuid::nil(),
     })
 }
 

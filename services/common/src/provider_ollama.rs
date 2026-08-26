@@ -24,10 +24,10 @@ impl UpstreamProvider for OllamaProvider {
     }
 
     /// No authentication required for local Ollama.
-    fn apply_auth<'a>(
+    fn apply_auth(
         &self,
         request: reqwest::RequestBuilder,
-        _api_key: &'a str,
+        _api_key: &str,
     ) -> reqwest::RequestBuilder {
         request
     }

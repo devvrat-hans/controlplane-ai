@@ -16,10 +16,10 @@ impl UpstreamProvider for GeminiProvider {
         format!("/v1beta/models/{model}:generateContent")
     }
 
-    fn apply_auth<'a>(
+    fn apply_auth(
         &self,
         request: reqwest::RequestBuilder,
-        api_key: &'a str,
+        api_key: &str,
     ) -> reqwest::RequestBuilder {
         request.query(&[("key", api_key)])
     }

@@ -54,10 +54,10 @@ pub trait UpstreamProvider: Send + Sync {
     ///
     /// For Anthropic: adds `x-api-key` header and `anthropic-version` header.
     /// For Gemini: adds `key` query parameter.
-    fn apply_auth<'a>(
+    fn apply_auth(
         &self,
         request: reqwest::RequestBuilder,
-        api_key: &'a str,
+        api_key: &str,
     ) -> reqwest::RequestBuilder;
 
     /// Extract the assistant's text response from the response body.

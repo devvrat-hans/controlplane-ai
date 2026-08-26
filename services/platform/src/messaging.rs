@@ -45,8 +45,7 @@ impl EventReceiver {
 }
 
 fn subject_matches(subject: &str, filter: &str) -> bool {
-    if filter.ends_with(".*") {
-        let prefix = &filter[..filter.len() - 2];
+    if let Some(prefix) = filter.strip_suffix(".*") {
         subject.starts_with(prefix)
     } else {
         subject == filter

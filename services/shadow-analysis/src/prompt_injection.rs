@@ -143,8 +143,6 @@ impl PromptInjectionDetector {
 
         let outcome = if result.score >= 0.90 {
             Outcome::Block
-        } else if result.score >= 0.70 {
-            Outcome::Escalate
         } else {
             Outcome::Escalate
         };

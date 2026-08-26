@@ -27,10 +27,10 @@ impl UpstreamProvider for OpenCodeProvider {
     }
 
     /// OpenCode Zen API uses no authentication (free model).
-    fn apply_auth<'a>(
+    fn apply_auth(
         &self,
         request: reqwest::RequestBuilder,
-        _api_key: &'a str,
+        _api_key: &str,
     ) -> reqwest::RequestBuilder {
         // No auth required for Ox Alpha Free
         request

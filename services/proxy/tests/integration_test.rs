@@ -29,6 +29,8 @@ fn test_proxy_app(upstream_url: &str) -> axum::Router {
         http_client: reqwest::Client::new(),
         fast_path,
         publisher: bus,
+        pool: None,
+        default_app_id: uuid::Uuid::nil(),
     });
 
     axum::Router::new()
@@ -115,6 +117,8 @@ async fn fast_path_blocks_unsafe_content() {
         http_client: reqwest::Client::new(),
         fast_path,
         publisher: bus,
+        pool: None,
+        default_app_id: uuid::Uuid::nil(),
     });
 
     let app = axum::Router::new()

@@ -222,8 +222,13 @@ export default function SettingsPage() {
                   <ConfigRow label="DB Name" value={config?.database_name ?? "..."} />
                 </CardContent>
               </Card>
-            </div>
-          )}
+            </div>          )}
+        </section>
+
+        {/* ═══ System Health ═══ */}
+        <section className="space-y-4">
+          <h3 className="text-[16px] font-semibold tracking-tight">System Health</h3>
+          <SystemHealthCard />
         </section>
 
         {/* ═══ API Keys ═══ */}
@@ -301,5 +306,123 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
       <span className="text-sm">{label}</span>
       <span className="text-sm font-mono text-muted-foreground">{value}</span>
     </div>
+  );
+}
+
+function SystemHealthCard() {
+  const [health, setHealth] = useState<{ status: string; version?: string; uptime_secs?: number; checks?: Record<string, unknown> } | null>(null);
+  const [latency, setLatency] = useState<number | null>(null);
+  const [dbStatus, setDbStatus] = useState<string>("checking");
+  const [latencyHistory, setLatencyHistory] = useState<number[]>([]);
+  const [pingCount, setPingCount] = useState(0);
+
+  useEffect(() => {
+    const check = async () => {
+      const start = performance.now();
+      try {
+        const res = await fetch(`${API_BASE}/health`);
+        const ms = Math.round(performance.now() - start);
+        setLatency(ms);
+        setLatencyHistory((prev) => [...prev.slice(-29), ms]);
+        setPingCount((c) => c + 1);
+        if (res.ok) {
+          const data = await res.json();
+          setHealth(data);
+        }
+      } catch {
+        setLatency(null);
+        setHealth(null);
+        setLatencyHistory((prev) => [...prev.slice(-29), 0]);
+      }
+      try {
+        const res = await fetch(`${API_BASE}/ready`);
+        setDbStatus(res.ok ? "connected" : "error");
+      } catch {
+        setDbStatus("unreachable");
+      }
+    };
+    check();
+    const id = setInterval(check, 10000);
+    return () => clearInterval(id);
+  }, []);
+
+  const uptimeStr = health?.uptime_secs
+    ? `${Math.floor(health.uptime_secs / 3600)}h ${Math.floor((health.uptime_secs % 3600) / 60)}m`
+    : "—";
+
+  const avgLatency = latencyHistory.length > 0
+    ? Math.round(latencyHistory.reduce((a, b) => a + b, 0) / latencyHistory.length)
+    : 0;
+
+  // Simple sparkline using SVG
+  const sparkline = latencyHistory.length > 1 ? (
+    <svg width="120" height="24" viewBox="0 0 120 24" className="mt-1">
+      <polyline
+        fill="none"
+        stroke="#3b82f6"
+        strokeWidth="1.5"
+        points={latencyHistory.map((v, i) => {
+          const maxVal = Math.max(...latencyHistory, 1);
+          const x = (i / (latencyHistory.length - 1)) * 118 + 1;
+          const y = 22 - (v / maxVal) * 20;
+          return `${x},${y}`;
+        }).join(" ")}
+      />
+    </svg>
+  ) : null;
+
+  return (
+    <Card className="shadow-vercel-sm">
+      <CardContent className="py-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          <div>
+            <p className="text-xs text-muted-foreground">API Status</p>
+            <div className="flex items-center gap-2 mt-1">
+              <div className={`h-2 w-2 rounded-full ${health ? "bg-emerald-500" : "bg-red-500"}`} />
+              <span className="text-sm font-medium">{health ? "Healthy" : "Offline"}</span>
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">API Latency (avg {avgLatency}ms)</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium">{latency !== null ? `${latency}ms` : "—"}</p>
+              {sparkline}
+            </div>
+            <p className="text-[9px] text-muted-foreground mt-0.5">{pingCount} pings</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Database</p>
+            <div className="flex items-center gap-2 mt-1">
+              <div className={`h-2 w-2 rounded-full ${dbStatus === "connected" ? "bg-emerald-500" : dbStatus === "checking" ? "bg-yellow-500 animate-pulse" : "bg-red-500"}`} />
+              <span className="text-sm font-medium capitalize">{dbStatus}</span>
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Version / Uptime</p>
+            <p className="text-sm font-mono font-medium mt-1">v{health?.version ?? "?"}</p>
+            <p className="text-[11px] text-muted-foreground">{uptimeStr}</p>
+          </div>
+        </div>
+        {/* Component health checks */}
+        {health?.checks && (
+          <div className="mt-4 pt-3 border-t border-border">
+            <p className="text-[10px] text-muted-foreground mb-2 uppercase tracking-wide">Component Checks</p>
+            <div className="flex flex-wrap gap-3">
+              {Object.entries(health.checks).map(([name, status]) => (
+                <div key={name} className="flex items-center gap-1.5">
+                  <div className={`h-1.5 w-1.5 rounded-full ${
+                    typeof status === "string" && status === "healthy" ? "bg-emerald-500"
+                    : typeof status === "string" && status === "unhealthy" ? "bg-red-500"
+                    : typeof status === "object" && status !== null && (status as Record<string, unknown>).status === "healthy" ? "bg-emerald-500"
+                    : "bg-yellow-500"
+                  }`} />
+                  <span className="text-[10px] text-muted-foreground font-mono">{name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

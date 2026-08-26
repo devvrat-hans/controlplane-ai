@@ -11,10 +11,10 @@ impl UpstreamProvider for AnthropicProvider {
         incoming_path.to_string()
     }
 
-    fn apply_auth<'a>(
+    fn apply_auth(
         &self,
         request: reqwest::RequestBuilder,
-        api_key: &'a str,
+        api_key: &str,
     ) -> reqwest::RequestBuilder {
         request
             .header("x-api-key", api_key)

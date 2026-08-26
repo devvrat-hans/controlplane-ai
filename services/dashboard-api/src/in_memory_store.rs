@@ -45,6 +45,12 @@ pub struct AxisCount {
     pub count: i64,
 }
 
+impl Default for InMemoryVerdictStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryVerdictStore {
     pub fn new() -> Self {
         Self {
@@ -155,7 +161,7 @@ impl InMemoryVerdictStore {
             .into_iter()
             .map(|(axis, count)| AxisCount { axis, count })
             .collect();
-        top_blocked_axes.sort_by(|a, b| b.count.cmp(&a.count));
+        top_blocked_axes.sort_by_key(|b| std::cmp::Reverse(b.count));
         top_blocked_axes.truncate(5);
 
         OverviewStats {
@@ -168,5 +174,28 @@ impl InMemoryVerdictStore {
             avg_fast_path_latency_ms: avg_latency,
             top_blocked_axes,
         }
+    }
+
+    /// Count fast-path verdicts in the last 24h (for weighted latency merge).
+    pub fn fast_path_count_24h(&self) -> i64 {
+        let store = match self.inner.lock() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+        let cutoff = Utc::now() - Duration::hours(24);
+        store.iter().filter(|r| r.path == "fast" && r.created_at > cutoff).count() as i64
+    }
+
+    /// Return verdict IDs in the last 24h (for dedup against DB).
+    pub fn recent_ids_24h(&self) -> std::collections::HashSet<String> {
+        let store = match self.inner.lock() {
+            Ok(s) => s,
+            Err(_) => return std::collections::HashSet::new(),
+        };
+        let cutoff = Utc::now() - Duration::hours(24);
+        store.iter()
+            .filter(|r| r.created_at > cutoff)
+            .map(|r| r.id.clone())
+            .collect()
     }
 }

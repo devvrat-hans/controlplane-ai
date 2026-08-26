@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchApi, getStatsOverview, getRecentVerdicts } from "@/lib/api";
+import { fetchApi, getStatsOverview, getRecentVerdicts, getPolicyStats, getFeedbackEffectiveness, getDetectionQuality, getApps } from "@/lib/api";
 
 const mockFetch = vi.fn();
 
@@ -102,5 +102,108 @@ describe("getRecentVerdicts", () => {
       expect.stringContaining("/api/v1/verdicts/recent?limit=25"),
       expect.any(Object)
     );
+  });
+});
+
+describe("getPolicyStats", () => {
+  it("fetches policy stats with app_id and window_hours", async () => {
+    const mockData = {
+      window_hours: 24,
+      checks: [
+        { check_name: "secret_detection", axis: "responsibility", total: 10, passes: 8, edits: 2, escalates: 0, blocks: 0, confirmed: 1, overridden: 0, dismissed: 0, precision: 1.0 },
+      ],
+      policies: [],
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(mockData),
+    });
+
+    const result = await getPolicyStats("app-123", 24);
+    expect(result).toEqual(mockData);
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/stats/policy?app_id=app-123&window_hours=24"),
+      expect.any(Object)
+    );
+  });
+
+  it("defaults to 24h window", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ checks: [], policies: [] }),
+    });
+
+    await getPolicyStats("app-456");
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("window_hours=24"),
+      expect.any(Object)
+    );
+  });
+});
+
+describe("getFeedbackEffectiveness", () => {
+  it("fetches feedback effectiveness metrics", async () => {
+    const mockData = {
+      patterns_promoted: 5,
+      overrides_applied_count: 12,
+      threshold_adjustments: 3,
+      avg_resolution_time_hours: 2.5,
+      resolution_distribution: { confirm_pct: 60, override_pct: 25, dismiss_pct: 15 },
+      improvement_indicators: { escalation_rate_trend: "improving", repeat_flag_rate: 0.1, reviewer_agreement_rate: 0.85 },
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(mockData),
+    });
+
+    const result = await getFeedbackEffectiveness();
+    expect(result).toEqual(mockData);
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/metrics/feedback-effectiveness"),
+      expect.any(Object)
+    );
+  });
+});
+
+describe("getDetectionQuality", () => {
+  it("fetches detection quality metrics", async () => {
+    const mockData = {
+      overall_trust_score: 0.85,
+      total_escalations_resolved: 20,
+      true_positives: 17,
+      false_positives: 3,
+      false_positive_rate: 0.15,
+      precision: 0.85,
+      checks: [],
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(mockData),
+    });
+
+    const result = await getDetectionQuality();
+    expect(result).toEqual(mockData);
+    expect(result.false_positive_rate).toBe(0.15);
+  });
+});
+
+describe("getApps", () => {
+  it("fetches list of apps", async () => {
+    const mockData = [
+      { id: "app-1", name: "ChatBot", data_governance_level: "medium" },
+      { id: "app-2", name: "CodeAssist", data_governance_level: "high" },
+    ];
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(mockData),
+    });
+
+    const result = await getApps();
+    expect(result).toEqual(mockData);
+    expect(result).toHaveLength(2);
   });
 });

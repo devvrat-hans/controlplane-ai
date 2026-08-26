@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Header } from "@/components/layout/header";
 import { ThemeProvider } from "@/components/providers/theme-provider";
 
@@ -23,9 +23,11 @@ describe("Header", () => {
     expect(options[0]).toHaveTextContent("All Applications");
   });
 
-  it("renders health indicator", () => {
+  it("renders health indicator", async () => {
     renderWithProviders(<Header />);
-    expect(screen.getByText("Healthy")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("Healthy")).toBeInTheDocument();
+    });
   });
 
   it("renders theme toggle button", () => {

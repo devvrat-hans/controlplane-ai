@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   PieChart,
@@ -7,6 +8,8 @@ import {
   Cell,
   BarChart,
   Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -17,8 +20,17 @@ import {
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { getStatsOverview, getRecentVerdicts, fetchApi } from "@/lib/api";
-import type { StatsOverview, VerdictRow } from "@/lib/api";
+import { getStatsOverview, getRecentVerdicts, getPolicyStats, fetchApi } from "@/lib/api";
+import type { StatsOverview, VerdictRow, PolicyCheckStat } from "@/lib/api";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+interface LatencyBucket {
+  hour: string;
+  avg_fast_path_ms: number;
+  p99_fast_path_ms: number;
+  sample_count: number;
+}
 
 const OUTCOME_COLORS: Record<string, string> = {
   pass: "#0070f3",
@@ -42,6 +54,12 @@ export default function OverviewPage() {
     queryKey: ["recent-verdicts"],
     queryFn: () => getRecentVerdicts(10),
     refetchInterval: 5000,
+  });
+
+  const { data: latencyData } = useQuery<LatencyBucket[]>({
+    queryKey: ["latency-timeseries"],
+    queryFn: () => fetchApi<LatencyBucket[]>("/api/v1/metrics/latency-timeseries"),
+    refetchInterval: 15000,
   });
 
   return (
@@ -81,6 +99,15 @@ export default function OverviewPage() {
             title="Avg Latency Added"
             value={stats ? `${stats.avg_fast_path_latency_ms.toFixed(1)}ms` : "—"}
             loading={statsLoading}
+            badge={
+              stats
+                ? stats.avg_fast_path_latency_ms < 10
+                  ? { text: "<10ms budget", variant: "success" as const }
+                  : stats.avg_fast_path_latency_ms < 25
+                    ? { text: "<25ms p99", variant: "warning" as const }
+                    : { text: "over budget", variant: "destructive" as const }
+                : undefined
+            }
           />
           <StatCard
             title="Cost Saved (est.)"
@@ -121,10 +148,14 @@ export default function OverviewPage() {
               />
             </CardContent>
           </Card>
-        </div>
+        </div>          {/* Latency Sparkline */}
+          <LatencySparklineCard data={latencyData} loading={statsLoading} />
 
-        {/* Detection Quality & Feedback Metrics */}
-        <DetectionQualitySection />
+          {/* Detection Quality & Feedback Metrics */}
+          <DetectionQualitySection />
+
+          {/* Policy Effectiveness Summary */}
+          <PolicyEffectivenessMini />
 
         {/* Recent Activity Feed */}
         <Card>
@@ -156,11 +187,13 @@ function StatCard({
   value,
   loading,
   variant,
+  badge,
 }: {
   title: string;
   value: string | number;
   loading?: boolean;
   variant?: "destructive" | "warning" | "success";
+  badge?: { text: string; variant: "destructive" | "warning" | "success" };
 }) {
   const valueColor =
     variant === "destructive"
@@ -184,6 +217,81 @@ function StatCard({
         ) : (
           <div className={`text-[24px] font-semibold tracking-tight-brand ${valueColor}`}>
             {value}
+          </div>
+        )}
+        {badge && !loading && (
+          <span className={`mt-1 inline-block text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+            badge.variant === 'success' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+            : badge.variant === 'warning' ? 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/20'
+            : 'bg-red-500/10 text-red-500 border border-red-500/20'
+          }`}>{badge.text}</span>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function LatencySparklineCard({
+  data,
+  loading,
+}: {
+  data?: LatencyBucket[];
+  loading: boolean;
+}) {
+  const chartData = (data ?? []).map((d) => {
+    const date = new Date(d.hour);
+    return {
+      time: date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      avg: d.avg_fast_path_ms,
+      p99: d.p99_fast_path_ms,
+    };
+  });
+
+  const latestAvg = chartData.length > 0 ? chartData[chartData.length - 1].avg : 0;
+  const latestP99 = chartData.length > 0 ? chartData[chartData.length - 1].p99 : 0;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm font-medium">
+          Fast-Path Latency (24h)
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {loading || chartData.length === 0 ? (
+          <div className="flex h-[150px] items-center justify-center text-sm text-muted-foreground">
+            {loading ? <div className="h-4 w-24 animate-pulse rounded bg-muted" /> : "No latency data yet."}
+          </div>
+        ) : (
+          <div>
+            <div className="flex gap-4 mb-3">
+              <div className="text-sm">
+                <span className="text-muted-foreground">avg </span>
+                <span className="font-mono font-bold">{latestAvg.toFixed(1)}ms</span>
+              </div>
+              <div className="text-sm">
+                <span className="text-muted-foreground">p99 </span>
+                <span className="font-mono font-bold">{latestP99.toFixed(1)}ms</span>
+              </div>
+              <div className={`text-xs self-center ${latestAvg < 10 ? 'text-emerald-500' : latestAvg < 25 ? 'text-yellow-500' : 'text-red-500'}`}>
+                {latestAvg < 10 ? '✓ under budget' : latestAvg < 25 ? '⚠ near budget' : '✗ over budget'}
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={120}>
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                <XAxis dataKey="time" fontSize={9} tickCount={6} />
+                <YAxis fontSize={9} width={35} />
+                <Tooltip
+                  formatter={(value, name) => [
+                    `${Number(value).toFixed(1)}ms`,
+                    name === "avg" ? "Avg" : "P99",
+                  ]}
+                />
+                <Line type="monotone" dataKey="avg" stroke="#0070f3" strokeWidth={2} dot={false} name="avg" />
+                <Line type="monotone" dataKey="p99" stroke="#f5a623" strokeWidth={1} strokeDasharray="4 4" dot={false} name="p99" />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
         )}
       </CardContent>
@@ -575,5 +683,70 @@ function DetectionQualitySection() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// === Policy Effectiveness Mini (overview sparkline) ===
+
+function PolicyEffectivenessMini() {
+  const [stats, setStats] = useState<PolicyCheckStat[]>([]);
+
+  useEffect(() => {
+    const load = () => {
+      fetch(`${API_BASE}/api/v1/stats/policy?window_hours=24`)
+        .then((r) => r.json())
+        .then((data) => setStats(data.checks || []))
+        .catch((err) => console.error("Failed to load policy stats:", err));
+    };
+    load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (stats.length === 0) return null;
+
+  const topChecks = stats
+    .slice(0, 5)
+    .sort((a, b) => (b.blocks + b.escalates) - (a.blocks + a.escalates));
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm font-medium">Policy Effectiveness</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {topChecks.map((s) => {
+            const resolved = s.confirmed + s.overridden + s.dismissed;
+            const fpRate = resolved > 0 ? (s.overridden + s.dismissed) / resolved : 0;
+            return (
+              <div
+                key={`${s.check_name}-${s.axis}`}
+                className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-xs"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.blocks > 0 ? "bg-red-400" : s.escalates > 0 ? "bg-orange-400" : "bg-emerald-400"}`} />
+                  <span className="font-medium truncate">{s.check_name}</span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {s.blocks > 0 && (
+                    <span className="text-red-400 font-mono">{s.blocks}×</span>
+                  )}
+                  {s.escalates > 0 && (
+                    <span className="text-orange-400 font-mono">{s.escalates}↑</span>
+                  )}
+                  {s.edits > 0 && (
+                    <span className="text-blue-400 font-mono">{s.edits}✎</span>
+                  )}
+                  {resolved > 0 && fpRate > 0.3 && (
+                    <span className="text-red-400 font-mono text-[10px]">FP {(fpRate * 100).toFixed(0)}%</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

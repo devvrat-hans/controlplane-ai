@@ -96,7 +96,38 @@ This sends real requests and pauses between scenarios for narration.
 4. "Every decision is recorded in a tamper-evident audit log.
    If anyone modifies a record after the fact, the chain breaks."
 
-### Act 7: Policy configuration (30s)
+### Act 7: Policy-wise stats (30s)
+
+1. Navigate to Policies tab.
+2. Scroll to "Policy Effectiveness" section — shows per-check blocked/escalated/edited/passed counts with FP rate.
+3. "This tells you exactly which policies are working and which are generating false positives."
+
+### Act 8: Reviewer override → RAG learning (60s)
+
+1. Navigate to Escalations tab.
+2. Open an escalated case — show the "Similar Past Cases" section with precedents.
+3. Click "Override" with a reason (e.g., "Stats were reliable in this context").
+4. Show the confirmation toast: "Case resolved — your decision has been recorded as a precedent."
+5. Send a **similar** request through the proxy.
+6. Show the verdict reason now includes: `[Learned] ⚠ 82%-similar past case was overridden by a reviewer`.
+7. "The system learned from your correction. Next time, it considers your judgment."
+
+### Act 9: Regulatory profile (30s)
+
+1. Navigate to Policies tab.
+2. Click "EU-Financial" regulatory profile.
+3. Show that thresholds updated to stricter values.
+4. "One click applies a regulatory profile — no manual threshold tuning."
+
+### Act 10: Audit trail (30s)
+
+1. Navigate to Audit tab.
+2. Show the hash-chained records from all the actions above.
+3. Click "Verify Chain Integrity" — shows the chain is intact.
+4. "Every decision is recorded in a tamper-evident audit log.
+   If anyone modifies a record after the fact, the chain breaks."
+
+### Act 11: Policy configuration (30s)
 
 1. Navigate to Policies tab.
 2. Change a threshold (e.g., lower the bias escalation threshold).
@@ -105,11 +136,13 @@ This sends real requests and pauses between scenarios for narration.
 
 ## Closing statement (30s)
 
-"ControlPlane.ai gives you three things:
+"ControlPlane.ai gives you four things:
 1. Real-time governance — not forensic log review.
 2. The honest engineering trade-off — block what you can catch fast,
    escalate what you can't, and get better over time.
-3. An audit trail that proves due diligence — not a dashboard that
+3. A learning loop — human corrections become precedents that
+   improve future decisions.
+4. An audit trail that proves due diligence — not a dashboard that
    explains what already went wrong."
 
 ## Troubleshooting

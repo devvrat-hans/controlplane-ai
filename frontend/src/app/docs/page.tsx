@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -96,14 +97,56 @@ const API_GROUPS: EndpointGroup[] = [
       },
       {
         method: "GET",
+        path: "/api/v1/audit/export?format=csv",
+        description: "Export audit records as CSV or JSON. Supports app_id and outcome filters.",
+        auth: false,
+      },
+      {
+        method: "GET",
         path: "/api/v1/audit/verify",
         description: "Verify the integrity of the audit hash chain. Returns the number of broken links.",
         auth: false,
       },
       {
         method: "GET",
+        path: "/api/v1/stats/policy?app_id=<uuid>&window_hours=24",
+        description: "Policy-wise effectiveness stats: per-check blocked/escalated/edited/passed counts, FP rate, reviewer resolution outcomes.",
+        auth: false,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/metrics/detection-quality",
+        description: "Detection quality metrics: trust score, precision by axis, FP/FN breakdown, 7-day trend.",
+        auth: false,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/metrics/feedback-effectiveness",
+        description: "Feedback loop effectiveness: patterns promoted, overrides applied, resolution distribution, escalation trend.",
+        auth: false,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/feedback/precedents?escalation_id=<uuid>",
+        description: "Retrieve reviewer precedents (similar past decisions) for an escalation case or call — the RAG feedback loop.",
+        auth: false,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/requests?limit=50&offset=0&search=&model=&outcome=",
+        description: "List intercepted API calls with server-side search, model filter, outcome filter, and keyset pagination.",
+        auth: false,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/metrics/latency-timeseries",
+        description: "Hourly fast-path latency buckets (avg + p99) for the last 24 hours — powers the overview sparkline.",
+        auth: false,
+      },
+      {
+        method: "GET",
         path: "/api/v1/cost/summary",
-        description: "Get token usage and cost summary for the last 24 hours.",
+        description: "Get token usage and cost summary for the last 24 hours, including per-model cost breakdown.",
         auth: false,
       },
       {
@@ -159,6 +202,26 @@ const API_GROUPS: EndpointGroup[] = [
   "prompt_injection_enabled": true,
   "hallucination_detection_enabled": true
 }`,
+      },
+      {
+        method: "PUT",
+        path: "/api/v1/apps/{app_id}/governance",
+        description: "Update the data governance level (high/medium/low) for an application.",
+        auth: false,
+        body: `{ "level": "low" }`,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/profiles",
+        description: "List available regulatory profiles (EU-Financial, US-Healthcare, etc.).",
+        auth: false,
+      },
+      {
+        method: "POST",
+        path: "/api/v1/policies/{app_id}/profile",
+        description: "Apply a regulatory profile to an application, updating all thresholds.",
+        auth: false,
+        body: `{ "profile_id": "eu-financial" }`,
       },
     ],
   },
@@ -329,6 +392,11 @@ export default function DocsPage() {
                         </pre>
                       </details>
                     )}
+
+                    {/* Try it button for GET endpoints */}
+                    {ep.method === "GET" && (
+                      <TryItButton path={ep.path} />
+                    )}
                   </div>
                 ))}
               </div>
@@ -337,5 +405,57 @@ export default function DocsPage() {
         ))}
       </div>
     </DashboardShell>
+  );
+}
+
+function TryItButton({ path }: { path: string }) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ status: number; body: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const tryIt = async () => {
+    setLoading(true);
+    setResult(null);
+    setError(null);
+    try {
+      // Replace path params with demo values
+      let url = `${API_BASE}${path}`;
+      url = url.replace(/<[^>]+>/g, "00000000-0000-0000-0000-000000000001");
+      url = url.replace(/\?.*$/, ""); // strip query params for simplicity
+      const start = performance.now();
+      const res = await fetch(url);
+      const elapsed = Math.round(performance.now() - start);
+      const text = await res.text();
+      let formatted = text;
+      try { formatted = JSON.stringify(JSON.parse(text), null, 2); } catch { /* not JSON */ }
+      setResult({ status: res.status, body: `[${elapsed}ms] ${formatted}` });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={tryIt}
+        disabled={loading}
+        className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent transition-colors disabled:opacity-50"
+      >
+        {loading ? "Trying..." : "▶ Try it"}
+      </button>
+      {result && (
+        <pre className="text-[10px] bg-muted/50 rounded-md p-2 mt-1 overflow-x-auto font-mono max-h-48 overflow-y-auto">
+          <span className={result.status < 400 ? "text-green-500" : "text-red-500"}>
+            {result.status}
+          </span>{" "}
+          {result.body}
+        </pre>
+      )}
+      {error && (
+        <p className="text-[10px] text-red-500 mt-1">{error}</p>
+      )}
+    </div>
   );
 }

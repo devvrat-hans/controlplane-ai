@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +70,7 @@ export default function EscalationsPage() {
   const canResolve = user ? canResolveEscalations(user.role) : false;
   const [tab, setTab] = useState<"open" | "resolved">("open");
   const [selected, setSelected] = useState<string | null>(null);
+  const [resolvedToast, setResolvedToast] = useState<string | null>(null);
 
   const queryClient = useQueryClient();
 
@@ -103,15 +104,44 @@ export default function EscalationsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["escalations"] });
       setSelected(null);
+      setResolvedToast("Case resolved — your decision has been recorded as a precedent for future calls.");
+      setTimeout(() => setResolvedToast(null), 5000);
     },
   });
 
   const escalations = data?.escalations ?? [];
   const selectedCase = escalations.find((e) => e.id === selected);
 
+  // Keyboard navigation: arrow keys to move between cases
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (escalations.length === 0) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      const currentIndex = escalations.findIndex((esc) => esc.id === selected);
+      if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        const nextIndex = currentIndex < escalations.length - 1 ? currentIndex + 1 : 0;
+        setSelected(escalations[nextIndex].id);
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        const prevIndex = currentIndex > 0 ? currentIndex - 1 : escalations.length - 1;
+        setSelected(escalations[prevIndex].id);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [escalations, selected]);
+
   return (
     <DashboardShell>
       <div className="space-y-4">
+        {resolvedToast && (
+          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600 flex items-center gap-2">
+            <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            {resolvedToast}
+          </div>
+        )}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div>
             <h2 className="text-2xl font-bold tracking-tight">Escalations</h2>
@@ -153,10 +183,19 @@ export default function EscalationsPage() {
                     <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                   </div>
                 ) : escalations.length === 0 ? (
-                  <div className="p-8 text-center text-sm text-muted-foreground">
-                    {tab === "open"
-                      ? "No open escalations. The system is running smoothly."
-                      : "No resolved cases yet."}
+                  <div className="p-8 text-center">
+                    <div className="mx-auto mb-3 h-12 w-12 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                      <svg className="h-6 w-6 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                        <polyline points="22 4 12 14.01 9 11.01" />
+                      </svg>
+                    </div>
+                    <p className="text-sm font-medium">All clear</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {tab === "open"
+                        ? "No open escalations — the system is running smoothly."
+                        : "No resolved cases yet."}
+                    </p>
                   </div>
                 ) : (
                   <div className="divide-y divide-border">
@@ -205,6 +244,75 @@ export default function EscalationsPage() {
   );
 }
 
+function SessionReplay({
+  turns,
+  currentCallId,
+}: {
+  turns: SessionThread["turns"];
+  currentCallId: string;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggle = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">
+          Session Replay ({turns.length} turns)
+        </span>
+        <button
+          onClick={() => setExpanded(expanded.size === turns.length ? new Set() : new Set(turns.map(t => t.id)))}
+          className="text-[10px] text-muted-foreground hover:text-foreground"
+        >
+          {expanded.size === turns.length ? "Collapse all" : "Expand all"}
+        </button>
+      </div>
+      <div className="max-h-64 overflow-y-auto space-y-1.5 rounded-md border border-border p-2">
+        {turns.map((turn, i) => {
+          const turnUser = extractUserMessage(turn.request_payload);
+          const turnAssistant = extractAssistantMessage(turn.response_payload);
+          const isCurrent = turn.id === currentCallId;
+          const isExpanded = expanded.has(turn.id);
+          return (
+            <div
+              key={turn.id}
+              className={`text-[11px] rounded p-1.5 cursor-pointer transition-colors ${
+                isCurrent
+                  ? "bg-orange-500/10 border border-orange-500/20"
+                  : "bg-muted/20 hover:bg-muted/40"
+              }`}
+              onClick={() => toggle(turn.id)}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground font-mono">T{i + 1}</span>
+                {isCurrent && <Badge variant="destructive" className="text-[8px] px-1 py-0">flagged</Badge>}
+
+              </div>
+              {turnUser && (
+                <p className={`text-blue-400 mt-0.5 ${isExpanded ? "whitespace-pre-wrap break-words" : "truncate"}`}>
+                  Q: {turnUser}
+                </p>
+              )}
+              {turnAssistant && (
+                <p className={`text-green-400 mt-0.5 ${isExpanded ? "whitespace-pre-wrap break-words" : "truncate"}`}>
+                  A: {turnAssistant}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function CaseRow({
   data,
   isSelected,
@@ -215,6 +323,7 @@ function CaseRow({
   onClick: () => void;
 }) {
   const age = getAge(data.created_at);
+  const priority = getPriority(data.axis, data.confidence);
 
   return (
     <div
@@ -225,7 +334,12 @@ function CaseRow({
     >
       <ConfidenceRing confidence={data.confidence} />
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{data.reason}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-medium truncate">{data.reason}</p>
+          {priority === "high" && (
+            <Badge className="text-[9px] bg-red-500/10 text-red-500 border-red-500/20 shrink-0">HIGH</Badge>
+          )}
+        </div>
         <div className="flex items-center gap-2 mt-0.5">
           <Badge variant="outline" className="text-[10px] capitalize">
             {data.axis}
@@ -268,6 +382,27 @@ function CaseDetail({
     enabled: !!data.call_id,
   });
 
+  // Reviewer precedents from the RAG learning store — similar past cases and
+  // how humans resolved them, shown while deciding this case.
+  interface Precedent {
+    id: string;
+    call_id: string;
+    axis: string;
+    model_outcome: string;
+    reviewer_action: string;
+    reviewer_reason: string | null;
+    score: number;
+  }
+  const { data: precedentsData } = useQuery<{ precedents: Precedent[] }>({
+    queryKey: ["reviewer-precedents", data.id],
+    queryFn: () =>
+      fetchApi<{ precedents: Precedent[] }>(
+        `/api/v1/feedback/precedents?escalation_id=${data.id}`
+      ),
+    enabled: !!data.id && data.status !== "resolved",
+  });
+  const precedents = precedentsData?.precedents ?? [];
+
   const userMessage = extractUserMessage(requestDetail?.call?.request_payload);
   const assistantMessage = extractAssistantMessage(requestDetail?.call?.response_payload);
 
@@ -287,9 +422,16 @@ function CaseDetail({
           </div>
           <div>
             <span className="text-muted-foreground">Confidence</span>
-            <p className="mt-0.5 font-medium">
-              {(data.confidence * 100).toFixed(1)}%
-            </p>
+            <div className="mt-0.5 flex items-center gap-2">
+              <p className="font-medium">
+                {(data.confidence * 100).toFixed(1)}%
+              </p>
+              <SessionRiskBadge
+                turnCount={sessionThread?.total_turns ?? 0}
+                verdictCount={requestDetail?.verdicts?.length ?? 0}
+                confidence={data.confidence}
+              />
+            </div>
           </div>
           <div>
             <span className="text-muted-foreground">Axis</span>
@@ -323,30 +465,9 @@ function CaseDetail({
           </div>
         )}
 
-        {/* Conversation Thread (multi-turn context) */}
+        {/* Session Replay (multi-turn context) */}
         {sessionThread && sessionThread.total_turns > 1 && (
-          <div className="space-y-2">
-            <span className="text-xs text-muted-foreground">
-              Conversation Thread ({sessionThread.total_turns} turns)
-            </span>
-            <div className="max-h-48 overflow-y-auto space-y-1.5 rounded-md border border-border p-2">
-              {sessionThread.turns.map((turn, i) => {
-                const turnUser = extractUserMessage(turn.request_payload);
-                const turnAssistant = extractAssistantMessage(turn.response_payload);
-                const isCurrent = turn.id === data.call_id;
-                return (
-                  <div
-                    key={turn.id}
-                    className={`text-[11px] rounded p-1.5 ${isCurrent ? "bg-orange-500/10 border border-orange-500/20" : "bg-muted/20"}`}
-                  >
-                    <span className="text-muted-foreground">Turn {i + 1}{isCurrent ? " (flagged)" : ""}:</span>
-                    {turnUser && <p className="text-blue-400 truncate">Q: {turnUser}</p>}
-                    {turnAssistant && <p className="text-green-400 truncate">A: {turnAssistant}</p>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <SessionReplay turns={sessionThread.turns} currentCallId={data.call_id} />
         )}
 
         {/* Reason */}
@@ -397,6 +518,56 @@ function CaseDetail({
           <p>Verdict: {data.verdict_id}</p>
           <p>App: {data.app_id}</p>
         </div>
+
+        {/* Reviewer precedents — learned context from similar past cases */}
+        {data.status !== "resolved" && (
+          <div>
+            <span className="text-xs text-muted-foreground">
+              Similar Past Cases ({precedents.length})
+            </span>
+            {precedents.length === 0 ? (
+              <p className="mt-1 text-[11px] text-muted-foreground/60 rounded-md border border-dashed border-border p-2">
+                No similar past reviewer decisions yet — resolving this case creates the first precedent.
+              </p>
+            ) : (
+              <div className="mt-1 space-y-1">
+                {precedents.map((p) => (
+                  <div
+                    key={p.id}
+                    className="text-[11px] rounded-md border border-border bg-muted/20 px-2 py-1.5 space-y-0.5"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant={p.reviewer_action === "confirm" ? "outline" : "secondary"}
+                        className={`text-[9px] capitalize ${
+                          p.reviewer_action === "confirm"
+                            ? "border-green-500/40 text-green-500"
+                            : p.reviewer_action === "override"
+                              ? "border-yellow-500/40 text-yellow-500"
+                              : ""
+                        }`}
+                      >
+                        {p.reviewer_action}ed
+                      </Badge>
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        {Math.round(p.score * 100)}% similar
+                      </span>
+                      <Badge variant="outline" className="text-[9px]">{p.axis}</Badge>
+                    </div>
+                    {p.reviewer_reason && (
+                      <p className="text-muted-foreground italic truncate">
+                        "{p.reviewer_reason}"
+                      </p>
+                    )}
+                  </div>
+                ))}
+                <p className="text-[10px] text-muted-foreground/50">
+                  Retrieved automatically from past reviewer decisions on similar content — your resolution here becomes a precedent for future calls.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Resolution actions (only for open cases + authorized users) */}
         {data.status !== "resolved" && canResolve && (
@@ -475,6 +646,36 @@ function CaseDetail({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function SessionRiskBadge({
+  turnCount,
+  verdictCount,
+  confidence,
+}: {
+  turnCount: number;
+  verdictCount: number;
+  confidence: number;
+}) {
+  // Session risk score: more turns + more verdicts + higher confidence = higher risk
+  const riskScore = Math.min(100, Math.round(
+    (turnCount * 15) + (verdictCount * 20) + (confidence * 30)
+  ));
+
+  if (riskScore < 30) return null;
+
+  const color =
+    riskScore >= 70
+      ? "bg-red-500/10 text-red-500 border-red-500/20"
+      : riskScore >= 40
+        ? "bg-orange-500/10 text-orange-500 border-orange-500/20"
+        : "bg-yellow-500/10 text-yellow-500 border-yellow-500/20";
+
+  return (
+    <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full border ${color}`}>
+      Risk: {riskScore}
+    </span>
   );
 }
 
@@ -562,6 +763,14 @@ function getAge(dateStr: string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function getPriority(axis: string, confidence: number): "high" | "medium" | "low" {
+  const axisWeight = axis === "responsibility" ? 3 : axis === "performance" ? 2 : 1;
+  const score = axisWeight * confidence;
+  if (score >= 2.0) return "high";
+  if (score >= 1.0) return "medium";
+  return "low";
 }
 
 function extractUserMessage(payload: unknown): string | null {

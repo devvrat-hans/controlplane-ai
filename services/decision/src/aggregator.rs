@@ -78,11 +78,17 @@ impl VerdictAggregator {
         let contributing: Vec<&Verdict> = verdicts.iter()
             .filter(|v| v.outcome != Outcome::Pass)
             .collect();
+        let worst_level: Vec<&Verdict> = verdicts.iter()
+            .filter(|v| v.outcome == final_outcome)
+            .collect();
+        // Fall back to all contributing verdicts when the final outcome came from
+        // intersection escalation rather than any single verdict's level.
+        let pool: Vec<&Verdict> = if worst_level.is_empty() { contributing.clone() } else { worst_level };
 
-        let primary = if contributing.is_empty() {
+        let primary = if pool.is_empty() {
             verdicts.first().unwrap()
         } else {
-            contributing.iter()
+            pool.iter()
                 .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
                 .unwrap()
         };

@@ -173,6 +173,10 @@ impl EscalationQueue {
     }
 
     /// Resolve a case with a resolution action.
+    ///
+    /// Every resolution — confirm, override, or dismiss — is captured as a
+    /// reviewer precedent in `reviewer_overrides` (the feedback/RAG learning
+    /// store) so similar future calls can retrieve past human corrections.
     pub async fn resolve_case(
         &self,
         id: Uuid,
@@ -198,6 +202,12 @@ impl EscalationQueue {
                 "Escalation case resolved"
             );
 
+            // Capture the precedent for the retraining loop (fail-open: a capture
+            // error must not fail the resolution itself).
+            if let Err(e) = self.capture_precedent(id, resolution, reason).await {
+                warn!(error = %e, escalation_id = %id, "Failed to capture reviewer precedent");
+            }
+
             // If override, signal policy reload
             if resolution == Resolution::Override {
                 let _ = self.publisher.publish("controlplane.policy.reload", b"escalation_override").await;
@@ -205,6 +215,82 @@ impl EscalationQueue {
         }
 
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Store this resolution in the reviewer_overrides learning table and
+    /// broadcast a feedback event.
+    async fn capture_precedent(
+        &self,
+        case_id: Uuid,
+        resolution: Resolution,
+        reason: &str,
+    ) -> Result<(), sqlx::Error> {
+        let case = match self.get_case(case_id).await? {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        // Pull request/response context for similarity matching later
+        let excerpts: Option<(Option<serde_json::Value>, Option<serde_json::Value>, Option<Uuid>)> =
+            sqlx::query_as(
+                "SELECT request_payload, response_payload, session_id FROM intercepted_calls WHERE id = $1"
+            )
+            .bind(case.call_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        let (request_excerpt, response_excerpt, session_id) = match excerpts {
+            Some((req, resp, sid)) => (
+                req.map(|v| truncate_excerpt(&v.to_string())),
+                resp.map(|v| truncate_excerpt(&v.to_string())),
+                sid,
+            ),
+            None => (None, None, None),
+        };
+
+        let precedent_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO reviewer_overrides (id, escalation_id, call_id, app_id, verdict_id, axis, \
+             model_outcome, model_confidence, reviewer_action, reviewer_reason, \
+             request_excerpt, response_excerpt, session_id, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'escalate', $7, $8, $9, $10, $11, $12, NOW())"
+        )
+        .bind(precedent_id)
+        .bind(case.id)
+        .bind(case.call_id)
+        .bind(case.app_id)
+        .bind(case.verdict_id)
+        .bind(&case.axis)
+        .bind(case.confidence)
+        .bind(resolution.as_str())
+        .bind(reason)
+        .bind(&request_excerpt)
+        .bind(&response_excerpt)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+
+        // Broadcast so other services know new learning data exists
+        let payload = serde_json::json!({
+            "precedent_id": precedent_id,
+            "escalation_id": case.id,
+            "call_id": case.call_id,
+            "app_id": case.app_id,
+            "axis": case.axis,
+            "reviewer_action": resolution.as_str(),
+        });
+        let envelope = EventEnvelope::new(
+            controlplane_common::events::subjects::FEEDBACK_RECORDED,
+            case.call_id,
+            AppId::from(case.app_id),
+            payload,
+        );
+        if let Ok(bytes) = envelope.to_bytes() {
+            let _ = self.publisher.publish(controlplane_common::events::subjects::FEEDBACK_RECORDED, &bytes).await;
+        }
+
+        info!(precedent_id = %precedent_id, escalation_id = %case.id, "Reviewer precedent captured");
+        Ok(())
     }
 
     /// Get open case count for dashboard stats.
@@ -217,6 +303,11 @@ impl EscalationQueue {
 
         Ok(count.0)
     }
+}
+
+/// Truncate an excerpt to keep the trigram index lean.
+fn truncate_excerpt(s: &str) -> String {
+    s.chars().take(2000).collect()
 }
 
 /// Background subscriber that creates escalation cases from verdict events.
