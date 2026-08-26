@@ -279,15 +279,22 @@ export default function PoliciesPage() {
                         body: JSON.stringify({ level: newLevel }),
                       });
                       setApps(apps.map(a => a.id === selectedApp ? { ...a, data_governance_level: newLevel } : a));
+                      loadPolicy(selectedApp);
                     } catch { /* ignore */ }
                   }}
                   disabled={!isEditable}
                   className={`text-[10px] font-medium px-2 py-1 rounded-md border cursor-pointer ${levelColors[level] || ""}`}
-                  title="Data governance level — classifies trust level of data sources"
+                  title={
+                    level === "low"
+                      ? "Stricter thresholds: block ≥0.70, escalate ≥0.40, max 2K tokens"
+                      : level === "high"
+                      ? "Relaxed thresholds: block ≥0.95, escalate ≥0.75, max 8K tokens"
+                      : "Standard thresholds: block ≥0.90, escalate ≥0.60, max 4K tokens"
+                  }
                 >
-                  <option value="high">Gov: High</option>
-                  <option value="medium">Gov: Medium</option>
-                  <option value="low">Gov: Low</option>
+                  <option value="high">Gov: High (relaxed)</option>
+                  <option value="medium">Gov: Medium (standard)</option>
+                  <option value="low">Gov: Low (strict)</option>
                 </select>
               );
             })()}
@@ -299,6 +306,42 @@ export default function PoliciesPage() {
             />
           </div>
         </div>
+
+        {/* Governance Level Impact */}
+        {(() => {
+          const currentApp = apps.find(a => a.id === selectedApp);
+          const level = currentApp?.data_governance_level || "medium";
+          const presets: Record<string, { block: number; escalate: number; groundedness: number; tokens: number; desc: string }> = {
+            low: { block: 0.70, escalate: 0.40, groundedness: 0.80, tokens: 2000, desc: "Untrusted data sources — stricter checks, lower confidence triggers flags" },
+            medium: { block: 0.90, escalate: 0.60, groundedness: 0.60, tokens: 4000, desc: "Standard data governance — balanced between safety and usability" },
+            high: { block: 0.95, escalate: 0.75, groundedness: 0.50, tokens: 8000, desc: "Well-governed data — relaxed checks, high confidence needed to trigger" },
+          };
+          const p = presets[level] || presets.medium;
+          return (
+            <Card className="border-dashed">
+              <CardContent className="pt-4 pb-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-medium">
+                      Data Governance: <span className={level === "low" ? "text-red-400" : level === "high" ? "text-green-400" : "text-yellow-400"}>{level.toUpperCase()}</span>
+                    </span>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{p.desc}</p>
+                  </div>
+                  <div className="text-right text-[10px] font-mono text-muted-foreground space-y-0.5">
+                    <div>Block ≥ {p.block}</div>
+                    <div>Escalate ≥ {p.escalate}</div>
+                    <div>Groundedness ≥ {p.groundedness}</div>
+                    <div>Max tokens: {p.tokens.toLocaleString()}</div>
+                  </div>
+                </div>
+                <p className="text-[10px] text-muted-foreground/60 mt-2 border-t border-border/30 pt-2">
+                  Changing the governance level applies preset thresholds. You can then fine-tune individual values below.
+                  Regulatory profiles override these presets with regulation-specific defaults.
+                </p>
+              </CardContent>
+            </Card>
+          );
+        })()}
 
         {/* Regulatory Profile Selector (R2.2) */}
         {profiles.length > 0 && (

@@ -20,10 +20,10 @@ import {
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { getStatsOverview, getRecentVerdicts, getPolicyStats, fetchApi } from "@/lib/api";
+import { getStatsOverview, getRecentVerdicts, fetchApi } from "@/lib/api";
 import type { StatsOverview, VerdictRow, PolicyCheckStat } from "@/lib/api";
+import { useApp } from "@/components/providers/app-provider";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 interface LatencyBucket {
   hour: string;
@@ -40,19 +40,22 @@ const OUTCOME_COLORS: Record<string, string> = {
 };
 
 export default function OverviewPage() {
+  const { selectedAppId } = useApp();
+  const appParam = selectedAppId !== "all" ? selectedAppId : undefined;
+
   const {
     data: stats,
     isLoading: statsLoading,
     error: statsError,
   } = useQuery<StatsOverview>({
-    queryKey: ["stats-overview"],
-    queryFn: getStatsOverview,
+    queryKey: ["stats-overview", selectedAppId],
+    queryFn: () => getStatsOverview(appParam),
     refetchInterval: 5000,
   });
 
   const { data: recentData } = useQuery({
-    queryKey: ["recent-verdicts"],
-    queryFn: () => getRecentVerdicts(10),
+    queryKey: ["recent-verdicts", selectedAppId],
+    queryFn: () => getRecentVerdicts(10, appParam),
     refetchInterval: 5000,
   });
 
@@ -689,19 +692,20 @@ function DetectionQualitySection() {
 // === Policy Effectiveness Mini (overview sparkline) ===
 
 function PolicyEffectivenessMini() {
+  const { selectedAppId } = useApp();
   const [stats, setStats] = useState<PolicyCheckStat[]>([]);
 
   useEffect(() => {
+    const appQ = selectedAppId !== "all" ? `&app_id=${selectedAppId}` : "";
     const load = () => {
-      fetch(`${API_BASE}/api/v1/stats/policy?window_hours=24`)
-        .then((r) => r.json())
+      fetchApi<{ checks: PolicyCheckStat[] }>(`/api/v1/stats/policy?window_hours=24${appQ}`)
         .then((data) => setStats(data.checks || []))
         .catch((err) => console.error("Failed to load policy stats:", err));
     };
     load();
     const id = setInterval(load, 15000);
     return () => clearInterval(id);
-  }, []);
+  }, [selectedAppId]);
 
   if (stats.length === 0) return null;
 

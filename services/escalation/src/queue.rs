@@ -359,24 +359,21 @@ pub fn spawn_escalation_listener(
                                         envelope.app_id
                                     };
 
-                                    // Alert fatigue mitigation: skip if duplicate open case
-                                    // exists for same app + axis within the last hour
+                                    // Dedup: skip only if exact same verdict_id already has
+                                    // an escalation case (prevents double-creation for same event)
                                     let is_duplicate: bool = sqlx::query_scalar(
                                         "SELECT EXISTS(SELECT 1 FROM escalation_cases \
-                                         WHERE app_id = $1 AND axis = $2 AND status = 'open' \
-                                         AND created_at > NOW() - INTERVAL '1 hour')"
+                                         WHERE verdict_id = $1)"
                                     )
-                                    .bind(app_id)
-                                    .bind(verdict.axis.as_str())
+                                    .bind(verdict.id)
                                     .fetch_one(&queue.pool)
                                     .await
                                     .unwrap_or(false);
 
                                     if is_duplicate {
                                         info!(
-                                            app_id = %app_id,
-                                            axis = verdict.axis.as_str(),
-                                            "Escalation dedup: skipping duplicate (same app+axis within 1h)"
+                                            verdict_id = %verdict.id,
+                                            "Escalation dedup: verdict already has a case"
                                         );
                                         continue;
                                     }

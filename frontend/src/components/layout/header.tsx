@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { useTheme } from "@/components/providers/theme-provider";
 import {
   Dropdown,
@@ -12,24 +12,22 @@ import {
   DropdownLabel,
 } from "@/components/ui/dropdown-menu";
 import { Select } from "@/components/ui/select";
+import { useApp } from "@/components/providers/app-provider";
 
 interface UserInfo {
   email: string;
   role: string;
 }
 
-const APP_OPTIONS = [
-  { value: "all", label: "All Applications" },
-  { value: "chatbot-prod", label: "chatbot-prod" },
-  { value: "copilot-internal", label: "copilot-internal" },
-  { value: "support-agent", label: "support-agent" },
-];
+const APP_FILTER_PAGES = ["/", "/requests", "/analytics"];
 
 export function Header() {
   const { theme, toggle } = useTheme();
   const router = useRouter();
+  const pathname = usePathname();
+  const { apps, selectedAppId, setSelectedAppId } = useApp();
+  const showAppSelector = APP_FILTER_PAGES.includes(pathname);
   const [user, setUser] = useState<UserInfo | null>(null);
-  const [selectedApp, setSelectedApp] = useState("all");
   const [apiHealthy, setApiHealthy] = useState<boolean | null>(null);
   const [sseConnected, setSseConnected] = useState(false);
   const [notifications, setNotifications] = useState<{id: string; type: string; reason: string; time: string}[]>([]);
@@ -53,7 +51,7 @@ export function Header() {
   // SSE connection monitor + live notifications
   useEffect(() => {
     const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-    const es = new EventSource(`${apiBase}/api/v1/stream`);
+    const es = new EventSource(`${apiBase}/api/v1/verdicts/stream`);
     es.onopen = () => setSseConnected(true);
     es.onerror = () => setSseConnected(false);
     es.onmessage = (event) => {
@@ -104,18 +102,23 @@ export function Header() {
           <MenuIcon className="h-5 w-5" />
         </button>
 
-        {/* App selector */}
-        <div className="flex items-center gap-2">
-          <span className="text-[12px] text-muted-foreground font-mono hidden sm:inline">
-            APP
-          </span>
-          <Select
-            value={selectedApp}
-            onValueChange={setSelectedApp}
-            options={APP_OPTIONS}
-            size="sm"
-          />
-        </div>
+        {/* App selector — only shown on pages that support app filtering */}
+        {showAppSelector && (
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-muted-foreground font-mono hidden sm:inline">
+              APP
+            </span>
+            <Select
+              value={selectedAppId}
+              onValueChange={setSelectedAppId}
+              options={[
+                { value: "all", label: "All Applications" },
+                ...apps.map((a) => ({ value: a.id, label: a.name })),
+              ]}
+              size="sm"
+            />
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2">

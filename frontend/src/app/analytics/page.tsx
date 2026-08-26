@@ -3,8 +3,6 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  LineChart,
-  Line,
   BarChart,
   Bar,
   PieChart,
@@ -24,8 +22,8 @@ import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { fetchApi } from "@/lib/api";
+import { useApp } from "@/components/providers/app-provider";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 // ─── Colors ────────────────────────────────────────────────────────────────
 const OUTCOME_COLORS: Record<string, string> = {
@@ -33,12 +31,6 @@ const OUTCOME_COLORS: Record<string, string> = {
   edit: "#f5a623",
   block: "#ee0000",
   escalate: "#7928ca",
-};
-
-const AXIS_COLORS: Record<string, string> = {
-  performance: "#0070f3",
-  cost: "#f5a623",
-  responsibility: "#7928ca",
 };
 
 const CHECK_COLORS = [
@@ -182,6 +174,7 @@ function filterByTimeRange(records: DbVerdict[], hours: number): DbVerdict[] {
 
 // ─── Main Page ─────────────────────────────────────────────────────────────
 export default function AnalyticsPage() {
+  const { selectedAppId } = useApp();
   const [timeRange, setTimeRange] = useState<TimeRange>("24h");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedAxis, setSelectedAxis] = useState<string>("all");
@@ -189,35 +182,36 @@ export default function AnalyticsPage() {
   const [selectedPolicy, setSelectedPolicy] = useState<string | null>(null);
 
   const hours = hoursFromRange(timeRange);
+  const appQ = selectedAppId !== "all" ? `&app_id=${selectedAppId}` : "";
 
   // Fetch all data
   const { data: verdictsData, isLoading: verdictsLoading } = useQuery<{ verdicts: DbVerdict[] }>({
-    queryKey: ["analytics-verdicts"],
-    queryFn: () => fetchApi<{ verdicts: DbVerdict[] }>(`${API_BASE}/api/v1/verdicts/recent?limit=500`),
+    queryKey: ["analytics-verdicts", selectedAppId],
+    queryFn: () => fetchApi<{ verdicts: DbVerdict[] }>(`/api/v1/verdicts/recent?limit=500${appQ}`),
     refetchInterval: 10000,
   });
 
   const { data: policyStats } = useQuery<{ checks: PolicyCheckStat[] }>({
-    queryKey: ["analytics-policy"],
-    queryFn: () => fetchApi<{ checks: PolicyCheckStat[] }>(`${API_BASE}/api/v1/stats/policy?window_hours=${hours}`),
+    queryKey: ["analytics-policy", selectedAppId, hours],
+    queryFn: () => fetchApi<{ checks: PolicyCheckStat[] }>(`/api/v1/stats/policy?window_hours=${hours}${appQ}`),
     refetchInterval: 15000,
   });
 
   const { data: detectionQuality } = useQuery<DetectionQuality>({
     queryKey: ["analytics-quality"],
-    queryFn: () => fetchApi<DetectionQuality>(`${API_BASE}/api/v1/metrics/detection-quality`),
+    queryFn: () => fetchApi<DetectionQuality>(`/api/v1/metrics/detection-quality`),
     refetchInterval: 15000,
   });
 
   const { data: feedbackData } = useQuery<FeedbackData>({
     queryKey: ["analytics-feedback"],
-    queryFn: () => fetchApi<FeedbackData>(`${API_BASE}/api/v1/metrics/feedback-effectiveness`),
+    queryFn: () => fetchApi<FeedbackData>(`/api/v1/metrics/feedback-effectiveness`),
     refetchInterval: 15000,
   });
 
   const { data: requestsData } = useQuery<{ requests: RequestListItem[] }>({
-    queryKey: ["analytics-requests"],
-    queryFn: () => fetchApi<{ requests: RequestListItem[] }>(`${API_BASE}/api/v1/requests?limit=500`),
+    queryKey: ["analytics-requests", selectedAppId],
+    queryFn: () => fetchApi<{ requests: RequestListItem[] }>(`/api/v1/requests?limit=500${appQ}`),
     refetchInterval: 10000,
   });
 
@@ -267,14 +261,6 @@ export default function AnalyticsPage() {
     { name: "Block", value: blockCount },
     { name: "Escalate", value: escalateCount },
   ].filter((d) => d.value > 0);
-
-  const axisData = useMemo(() => {
-    const map: Record<string, number> = {};
-    filteredVerdicts.forEach((v) => {
-      map[v.axis] = (map[v.axis] || 0) + 1;
-    });
-    return Object.entries(map).map(([axis, count]) => ({ axis, count }));
-  }, [filteredVerdicts]);
 
   const axisOutcomeData = useMemo(() => {
     const map: Record<string, { pass: number; edit: number; block: number; escalate: number }> = {};
@@ -736,8 +722,6 @@ export default function AnalyticsPage() {
                 {checks
                   .sort((a, b) => (b.blocks + b.escalates) - (a.blocks + a.escalates))
                   .map((c, idx) => {
-                    const resolved = c.confirmed + c.overridden + c.dismissed;
-                    const fpRate = resolved > 0 ? ((c.overridden + c.dismissed) / resolved * 100) : 0;
                     const isSelected = selectedPolicy === c.check_name;
                     return (
                       <div

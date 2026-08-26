@@ -517,7 +517,7 @@ async fn policy_stats(
     State(state): State<Arc<DashboardState>>,
     Query(params): Query<PolicyStatsParams>,
 ) -> Result<Json<PolicyStatsResponse>, (StatusCode, String)> {
-    let window = params.window_hours.unwrap_or(24).clamp(1, 168);
+    let window = params.window_hours.unwrap_or(24).clamp(1, 720);
     let mut aggs: std::collections::HashMap<(String, String), CheckAgg> = std::collections::HashMap::new();
 
     if let Some(ref pool) = state.pool {
@@ -1491,6 +1491,7 @@ struct ListRequestsParams {
     search: Option<String>,
     model: Option<String>,
     outcome: Option<String>,
+    app_id: Option<Uuid>,
 }
 
 type RequestRawRow = (Uuid, String, String, Option<i32>, Option<i32>, Option<i32>, Option<i32>, String, String);
@@ -1501,7 +1502,7 @@ async fn list_requests(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
-    let limit = params.limit.unwrap_or(50).min(200);
+    let limit = params.limit.unwrap_or(50).min(500);
     let offset = params.offset.unwrap_or(0).max(0);
     let search = params.search.unwrap_or_default();
     let model_filter = params.model.unwrap_or_default();
@@ -1528,9 +1529,15 @@ async fn list_requests(
         bind_values.push(outcome_filter.clone());
         let idx = bind_values.len();
         conditions.push(format!(
-            "EXISTS (SELECT 1 FROM verdicts v WHERE v.call_id = ic.id AND v.outcome = ${} ORDER BY v.confidence DESC LIMIT 1)",
+            "(SELECT COALESCE(outcome, 'pass') FROM verdicts WHERE call_id = ic.id \
+             ORDER BY CASE outcome WHEN 'block' THEN 0 WHEN 'escalate' THEN 1 WHEN 'edit' THEN 2 ELSE 3 END, confidence DESC LIMIT 1) = ${}",
             idx
         ));
+    }
+    if let Some(app_id) = params.app_id {
+        bind_values.push(app_id.to_string());
+        let idx = bind_values.len();
+        conditions.push(format!("ic.app_id = ${}::uuid", idx));
     }
     let where_clause = if conditions.is_empty() {
         String::new()
@@ -1554,7 +1561,7 @@ async fn list_requests(
         "SELECT ic.id, COALESCE(a.name, ic.app_id::text), ic.model, ic.token_count_input, \
             ic.token_count_output, ic.upstream_latency_ms, ic.fast_path_latency_ms, \
             TO_CHAR(ic.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-            (SELECT COALESCE(outcome, 'pass') FROM verdicts WHERE call_id = ic.id ORDER BY confidence DESC LIMIT 1) \
+            (SELECT COALESCE(outcome, 'pass') FROM verdicts WHERE call_id = ic.id ORDER BY CASE outcome WHEN 'block' THEN 0 WHEN 'escalate' THEN 1 WHEN 'edit' THEN 2 ELSE 3 END, confidence DESC LIMIT 1) \
          FROM intercepted_calls ic LEFT JOIN apps a ON a.id = ic.app_id \
          {} ORDER BY ic.created_at DESC LIMIT ${} OFFSET ${}",
         where_clause, bind_values.len() + 1, bind_values.len() + 2
@@ -1588,7 +1595,7 @@ async fn export_requests_csv(
         "SELECT ic.id, COALESCE(a.name, ic.app_id::text), ic.model, \
             ic.token_count_input, ic.token_count_output, ic.upstream_latency_ms, ic.fast_path_latency_ms, \
             TO_CHAR(ic.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-            (SELECT COALESCE(outcome, 'pass') FROM verdicts WHERE call_id = ic.id ORDER BY confidence DESC LIMIT 1) \
+            (SELECT COALESCE(outcome, 'pass') FROM verdicts WHERE call_id = ic.id ORDER BY CASE outcome WHEN 'block' THEN 0 WHEN 'escalate' THEN 1 WHEN 'edit' THEN 2 ELSE 3 END, confidence DESC LIMIT 1) \
          FROM intercepted_calls ic LEFT JOIN apps a ON a.id = ic.app_id \
          ORDER BY ic.created_at DESC LIMIT 1000"
     )
@@ -2023,12 +2030,17 @@ async fn list_escalations(
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
     let limit = params.limit.unwrap_or(50).min(200);
-    // "all" is explicit; defaulting silently to open hides resolved history.
     let status = params.status.unwrap_or_else(|| "open".to_string());
     let filter_all = status.eq_ignore_ascii_case("all");
+    let filter_all_open = status.eq_ignore_ascii_case("all_open");
 
     let total: i64 = if filter_all {
         sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM escalation_cases")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?.0
+    } else if filter_all_open {
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM escalation_cases WHERE status IN ('open', 'in_review')")
             .fetch_one(pool)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?.0
@@ -2040,25 +2052,23 @@ async fn list_escalations(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?.0
     };
 
-    // Priority scoring: higher confidence + responsibility axis + older = higher priority
+    let order_clause = "ORDER BY \
+           CASE WHEN axis = 'responsibility' THEN 3 WHEN axis = 'performance' THEN 2 ELSE 1 END * confidence DESC, \
+           created_at ASC";
+
     let query_str = if filter_all {
-        "SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
-         FROM escalation_cases \
-         ORDER BY \
-           CASE WHEN axis = 'responsibility' THEN 3 WHEN axis = 'performance' THEN 2 ELSE 1 END * confidence DESC, \
-           created_at ASC \
-         LIMIT $1"
+        format!("SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
+         FROM escalation_cases {order_clause} LIMIT $1")
+    } else if filter_all_open {
+        format!("SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
+         FROM escalation_cases WHERE status IN ('open', 'in_review') {order_clause} LIMIT $1")
     } else {
-        "SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
-         FROM escalation_cases WHERE status = $2 \
-         ORDER BY \
-           CASE WHEN axis = 'responsibility' THEN 3 WHEN axis = 'performance' THEN 2 ELSE 1 END * confidence DESC, \
-           created_at ASC \
-         LIMIT $1"
+        format!("SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
+         FROM escalation_cases WHERE status = $2 {order_clause} LIMIT $1")
     };
 
-    let mut q = sqlx::query_as::<_, EscalationRow>(query_str).bind(limit);
-    if !filter_all {
+    let mut q = sqlx::query_as::<_, EscalationRow>(&query_str).bind(limit);
+    if !filter_all && !filter_all_open {
         q = q.bind(&status);
     }
     let cases: Vec<EscalationRow> = q
@@ -2724,13 +2734,58 @@ async fn update_governance_level(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
+    // Adjust policy thresholds based on governance level
+    let (block_thresh, escalate_thresh, groundedness_thresh, max_tokens) = match body.level.as_str() {
+        "low" => (0.7, 0.4, 0.8, 2000),    // Stricter: lower confidence needed to block/escalate
+        "high" => (0.95, 0.75, 0.5, 8000),  // Relaxed: higher confidence needed
+        _ => (0.9, 0.6, 0.6, 4000),         // Medium: default thresholds
+    };
+
+    // Update responsibility axis thresholds
+    let _ = sqlx::query(
+        "UPDATE policies SET threshold_config = jsonb_set(jsonb_set(threshold_config, '{block_threshold}', $1::text::jsonb), '{escalate_threshold}', $2::text::jsonb), \
+         version = COALESCE(version, 0) + 1 \
+         WHERE app_id = $3 AND axis = 'responsibility' AND is_active = true"
+    )
+    .bind(format!("{block_thresh}"))
+    .bind(format!("{escalate_thresh}"))
+    .bind(parsed_app_id)
+    .execute(pool).await;
+
+    // Update performance axis thresholds
+    let _ = sqlx::query(
+        "UPDATE policies SET threshold_config = jsonb_set(jsonb_set(threshold_config, '{groundedness_threshold}', $1::text::jsonb), '{block_threshold}', $2::text::jsonb), \
+         version = COALESCE(version, 0) + 1 \
+         WHERE app_id = $3 AND axis = 'performance' AND is_active = true"
+    )
+    .bind(format!("{groundedness_thresh}"))
+    .bind(format!("{block_thresh}"))
+    .bind(parsed_app_id)
+    .execute(pool).await;
+
+    // Update cost axis thresholds
+    let _ = sqlx::query(
+        "UPDATE policies SET threshold_config = jsonb_set(threshold_config, '{max_tokens_per_request}', $1::text::jsonb), \
+         version = COALESCE(version, 0) + 1 \
+         WHERE app_id = $2 AND axis = 'cost' AND is_active = true"
+    )
+    .bind(format!("{max_tokens}"))
+    .bind(parsed_app_id)
+    .execute(pool).await;
+
     Ok(Json(serde_json::json!({
         "app_id": app_id,
         "data_governance_level": body.level,
+        "thresholds_applied": {
+            "block_threshold": block_thresh,
+            "escalate_threshold": escalate_thresh,
+            "groundedness_threshold": groundedness_thresh,
+            "max_tokens_per_request": max_tokens
+        },
         "note": match body.level.as_str() {
-            "low" => "Low governance = data sources are untrusted; stricter checks recommended",
-            "high" => "High governance = well-governed data sources; standard thresholds",
-            _ => "Medium governance = moderately governed data sources"
+            "low" => "Low governance: stricter thresholds applied — block at 0.7, escalate at 0.4, max 2K tokens",
+            "high" => "High governance: relaxed thresholds applied — block at 0.95, escalate at 0.75, max 8K tokens",
+            _ => "Medium governance: standard thresholds applied — block at 0.9, escalate at 0.6, max 4K tokens"
         }
     })))
 }

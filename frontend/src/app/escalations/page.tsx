@@ -78,7 +78,7 @@ export default function EscalationsPage() {
     queryKey: ["escalations", tab],
     queryFn: () =>
       fetchApi<EscalationListResponse>(
-        `/api/v1/escalations?status=${tab === "open" ? "open" : "resolved"}&limit=50`
+        `/api/v1/escalations?status=${tab === "open" ? "all_open" : "resolved"}&limit=50`
       ),
     refetchInterval: 5000,
   });
