@@ -45,8 +45,26 @@ impl FastPathEngine {
         token_count_output: Option<i32>,
         session_key: Option<u64>,
     ) -> FastPathResult {
+        self.evaluate_with_app_context(response_body, token_count_output, session_key, None)
+    }
+
+    /// Full evaluation with per-app cost cap override.
+    pub fn evaluate_with_app_context(
+        &self,
+        response_body: &str,
+        token_count_output: Option<i32>,
+        session_key: Option<u64>,
+        app_max_tokens: Option<i32>,
+    ) -> FastPathResult {
         let start = Instant::now();
-        let rules = self.policy_cache.load();
+        let base_rules = self.policy_cache.load();
+        let rules = if let Some(cap) = app_max_tokens {
+            let mut r = (*base_rules).clone();
+            r.max_tokens_per_request = Some(cap);
+            std::sync::Arc::new(r)
+        } else {
+            base_rules
+        };
         let mut verdicts: Vec<FastPathVerdict> = Vec::new();
         let mut edits: Vec<ResponseEdit> = Vec::new();
         let mut worst_outcome = Outcome::Pass;

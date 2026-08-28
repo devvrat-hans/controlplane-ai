@@ -69,6 +69,17 @@ pub async fn proxy_handler(
     let app_id: Uuid = extract_app_id(&request_body, &headers)
         .unwrap_or(state.default_app_id);
 
+    // Extract profile_id (0-5) for Agent-Internal (App1) regulatory profile override
+    let profile_id: Option<u8> = extract_profile_id(&request_body);
+    if let Some(pid) = profile_id {
+        info!(
+            correlation_id = %correlation_id,
+            profile_id = pid,
+            profile_name = profile_id_to_name(pid),
+            "Using regulatory profile override"
+        );
+    }
+
     // Forward to upstream
     let upstream_path = state.provider.rewrite_path(&path, &model_in_body);
     let upstream_url = format!("{}{}", state.upstream_base_url, upstream_path);
@@ -125,10 +136,38 @@ pub async fn proxy_handler(
     // Extract token usage from response (provider-aware)
     let (input_tokens, output_tokens) = state.provider.extract_token_usage(&response_body);
 
+    // Look up per-app cost cap from DB policies (or from profile if profile_id provided for App1)
+    let app_max_tokens: Option<i32> = if let Some(pool) = state.pool.as_ref() {
+        if let Some(pid) = profile_id {
+            // profile_id provided — look up from policy_profiles table
+            let profile_name = profile_id_to_name(pid);
+            sqlx::query_scalar::<_, i32>(
+                "SELECT (default_thresholds->'cost'->>'max_tokens_per_request')::int FROM policy_profiles WHERE id = $1 LIMIT 1"
+            )
+            .bind(profile_name)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+        } else {
+            // No profile_id — use app's own policy (which may link to a default profile)
+            sqlx::query_scalar::<_, i32>(
+                "SELECT (threshold_config->>'max_tokens_per_request')::int FROM policies WHERE app_id = $1 AND axis = 'cost' AND is_active = true LIMIT 1"
+            )
+            .bind(app_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+        }
+    } else {
+        None
+    };
+
     // --- Fast-path checks (synchronous, must complete before delivery) ---
     let fast_path_start = Instant::now();
     let fast_path_result = run_fast_path_safe(
-        &state.fast_path, &response_body, output_tokens, &request_body, correlation_id,
+        &state.fast_path, &response_body, output_tokens, &request_body, correlation_id, app_max_tokens,
     ).await;
     let fast_path_latency_ms = fast_path_start.elapsed().as_millis() as i32;
 
@@ -309,6 +348,7 @@ async fn run_fast_path_safe(
     output_tokens: Option<i32>,
     request_body: &[u8],
     call_id: Uuid,
+    app_max_tokens: Option<i32>,
 ) -> FastPathSafeResult {
     let body_str = String::from_utf8_lossy(response_body);
     // Hash only the user message content + session_id so retry detection works
@@ -338,7 +378,7 @@ async fn run_fast_path_safe(
         tokio::task::spawn_blocking({
             let engine = engine.clone();
             let body = body_str.to_string();
-            move || engine.evaluate_with_context(&body, output_tokens, session_key)
+            move || engine.evaluate_with_app_context(&body, output_tokens, session_key, app_max_tokens)
         }),
     )
     .await;
@@ -446,6 +486,32 @@ fn extract_session_id(request_body: &[u8], headers: &axum::http::HeaderMap) -> O
     }
 
     None
+}
+
+/// Extract profile_id (0-5) from request body for regulatory profile selection.
+/// Only meaningful for Agent-Internal (App1).
+fn extract_profile_id(request_body: &[u8]) -> Option<u8> {
+    if let Ok(body) = serde_json::from_slice::<serde_json::Value>(request_body) {
+        if let Some(pid) = body.get("profile_id").and_then(|v| v.as_u64()) {
+            if pid <= 5 {
+                return Some(pid as u8);
+            }
+        }
+    }
+    None
+}
+
+/// Map profile_id (0-5) to the database profile name.
+fn profile_id_to_name(id: u8) -> &'static str {
+    match id {
+        0 => "us-financial",
+        1 => "eu-financial",
+        2 => "us-healthcare",
+        3 => "india-general",
+        4 => "eu-general",
+        5 => "global-internal",
+        _ => "eu-financial", // fallback to default
+    }
 }
 
 /// Extract app_id from the request.
