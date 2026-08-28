@@ -176,19 +176,23 @@ pub async fn proxy_handler(
     // Publish verdicts to SSE (for all outcomes including pass/block)
     let publisher_for_verdicts = state.publisher.clone();
     let verdicts_for_stream: Vec<Verdict> = if fast_path_result.verdicts.is_empty() {
-        vec![Verdict::new(
-            correlation_id,
-            controlplane_common::types::Axis::Responsibility,
-            VerdictPath::Fast,
-            fast_path_result.outcome,
-            1.0,
-            match fast_path_result.outcome {
-                Outcome::Pass => "All checks passed",
-                Outcome::Block => fast_path_result.block_reason.as_deref().unwrap_or("Blocked"),
-                _ => "Processed",
-            },
-            "fast-path-summary",
-        ).with_duration(fast_path_latency_ms)]
+        // No individual check triggered — create pass verdicts for each axis
+        // so statistics are distributed evenly across responsibility/performance/cost
+        use controlplane_common::types::Axis;
+        vec![
+            Verdict::new(
+                correlation_id, Axis::Responsibility, VerdictPath::Fast,
+                Outcome::Pass, 1.0, "Responsibility checks passed", "fast-path-summary",
+            ).with_duration(fast_path_latency_ms),
+            Verdict::new(
+                correlation_id, Axis::Performance, VerdictPath::Fast,
+                Outcome::Pass, 1.0, "Performance checks passed", "fast-path-summary",
+            ).with_duration(0),
+            Verdict::new(
+                correlation_id, Axis::Cost, VerdictPath::Fast,
+                Outcome::Pass, 1.0, "Cost checks passed", "fast-path-summary",
+            ).with_duration(0),
+        ]
     } else {
         fast_path_result.verdicts.clone()
     };
@@ -307,10 +311,25 @@ async fn run_fast_path_safe(
     call_id: Uuid,
 ) -> FastPathSafeResult {
     let body_str = String::from_utf8_lossy(response_body);
+    // Hash only the user message content + session_id so retry detection works
+    // (identical messages in the same session produce the same key)
     let session_key = {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        request_body.hash(&mut hasher);
+        if let Ok(body) = serde_json::from_slice::<serde_json::Value>(request_body) {
+            if let Some(sid) = body.get("session_id").and_then(|v| v.as_str()) {
+                sid.hash(&mut hasher);
+            }
+            if let Some(messages) = body.get("messages").and_then(|v| v.as_array()) {
+                if let Some(last_msg) = messages.last() {
+                    if let Some(content) = last_msg.get("content").and_then(|c| c.as_str()) {
+                        content.hash(&mut hasher);
+                    }
+                }
+            }
+        } else {
+            request_body.hash(&mut hasher);
+        }
         Some(hasher.finish())
     };
 

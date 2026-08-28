@@ -188,7 +188,7 @@ async fn recent_verdicts(
     State(state): State<Arc<DashboardState>>,
     Query(params): Query<RecentVerdictsParams>,
 ) -> Result<Json<RecentVerdictsResponse>, (StatusCode, String)> {
-    let limit = params.limit.unwrap_or(50).min(200) as usize;
+    let limit = params.limit.unwrap_or(50).min(10000) as usize;
     let app_id_str = params.app_id.map(|u| u.to_string());
     let outcome_str = params.outcome.as_deref();
 
@@ -1704,18 +1704,16 @@ async fn get_user_profile(
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
 
-    // In demo mode, return the admin user
     let profile = sqlx::query_as::<_, UserProfile>(
-        "SELECT id, email, name, role, created_at FROM users WHERE email = $1"
+        "SELECT id, email, name, role, created_at FROM users WHERE role = 'admin' LIMIT 1"
     )
-    .bind("admin@controlplane.ai")
     .fetch_optional(pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     match profile {
         Some(p) => Ok(Json(p)),
-        None => Err((StatusCode::NOT_FOUND, "User not found".to_string())),
+        None => Err((StatusCode::NOT_FOUND, "No admin user found".to_string())),
     }
 }
 
@@ -2500,7 +2498,7 @@ struct PrecedentRow {
     model_outcome: String,
     reviewer_action: String,
     reviewer_reason: Option<String>,
-    score: f64,
+    score: f32,
     created_at: DateTime<Utc>,
 }
 
@@ -2544,17 +2542,17 @@ async fn feedback_precedents(
     } else {
         sqlx::query_as::<_, PrecedentRow>(
             "SELECT id, call_id, axis, model_outcome, reviewer_action, reviewer_reason, \
-                    GREATEST(COALESCE(similarity(response_excerpt, $1), 0), \
-                             COALESCE(similarity(request_excerpt, $1), 0)) AS score, \
+                    GREATEST(COALESCE(similarity(response_excerpt, $1), 0::real), \
+                             COALESCE(similarity(request_excerpt, $1), 0::real)) AS score, \
                     created_at \
              FROM reviewer_overrides \
              WHERE call_id <> $3 \
-               AND (COALESCE(similarity(response_excerpt, $1), 0) >= $2 \
-                    OR COALESCE(similarity(request_excerpt, $1), 0) >= $2) \
+               AND (COALESCE(similarity(response_excerpt, $1), 0::real) >= $2::real \
+                    OR COALESCE(similarity(request_excerpt, $1), 0::real) >= $2::real) \
              ORDER BY score DESC LIMIT 3"
         )
         .bind(&text)
-        .bind(min_score)
+        .bind(min_score as f32)
         .bind(target_call_id)
         .fetch_all(pool)
         .await

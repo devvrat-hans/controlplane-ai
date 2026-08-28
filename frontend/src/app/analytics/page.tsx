@@ -143,28 +143,42 @@ function formatDay(date: Date): string {
 function bucketByHour(records: DbVerdict[], hours: number) {
   const now = new Date();
   const cutoff = new Date(now.getTime() - hours * 3600 * 1000);
-  const buckets: Record<string, { pass: number; edit: number; block: number; escalate: number; total: number }> = {};
 
-  // Initialize all buckets
+  // Use timestamp as unique key (not display string) to avoid duplicate hour labels
+  const bucketList: { label: string; ts: number; pass: number; edit: number; block: number; escalate: number; total: number }[] = [];
+  const bucketMap = new Map<number, number>(); // timestamp → index in bucketList
+
+  // Initialize all hour buckets (rounded to the hour)
   for (let i = hours; i >= 0; i--) {
     const d = new Date(now.getTime() - i * 3600 * 1000);
-    const key = hours <= 24 ? formatHour(d) : `${formatDay(d)} ${formatHour(d)}`;
-    buckets[key] = { pass: 0, edit: 0, block: 0, escalate: 0, total: 0 };
+    d.setMinutes(0, 0, 0);
+    const ts = d.getTime();
+    if (!bucketMap.has(ts)) {
+      const label = hours <= 24 ? formatHour(d) : `${formatDay(d)} ${formatHour(d)}`;
+      bucketMap.set(ts, bucketList.length);
+      bucketList.push({ label, ts, pass: 0, edit: 0, block: 0, escalate: 0, total: 0 });
+    }
   }
 
   records.forEach((r) => {
     const d = new Date(r.created_at);
     if (d < cutoff) return;
-    const key = hours <= 24 ? formatHour(d) : `${formatDay(d)} ${formatHour(d)}`;
-    if (!buckets[key]) buckets[key] = { pass: 0, edit: 0, block: 0, escalate: 0, total: 0 };
-    const outcome = r.outcome.toLowerCase();
-    if (outcome in buckets[key]) {
-      (buckets[key] as Record<string, number>)[outcome]++;
+    const rounded = new Date(d);
+    rounded.setMinutes(0, 0, 0);
+    const ts = rounded.getTime();
+    const idx = bucketMap.get(ts);
+    if (idx !== undefined) {
+      const outcome = r.outcome.toLowerCase();
+      const bucket = bucketList[idx];
+      if (outcome === "pass") bucket.pass++;
+      else if (outcome === "edit") bucket.edit++;
+      else if (outcome === "block") bucket.block++;
+      else if (outcome === "escalate") bucket.escalate++;
+      bucket.total++;
     }
-    buckets[key].total++;
   });
 
-  return Object.entries(buckets).map(([hour, data]) => ({ hour, ...data }));
+  return bucketList.map(({ label, pass, edit, block, escalate, total }) => ({ hour: label, pass, edit, block, escalate, total }));
 }
 
 function filterByTimeRange(records: DbVerdict[], hours: number): DbVerdict[] {
@@ -174,7 +188,7 @@ function filterByTimeRange(records: DbVerdict[], hours: number): DbVerdict[] {
 
 // ─── Main Page ─────────────────────────────────────────────────────────────
 export default function AnalyticsPage() {
-  const { selectedAppId } = useApp();
+  const { selectedAppId, apps } = useApp();
   const [timeRange, setTimeRange] = useState<TimeRange>("24h");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedAxis, setSelectedAxis] = useState<string>("all");
@@ -184,10 +198,13 @@ export default function AnalyticsPage() {
   const hours = hoursFromRange(timeRange);
   const appQ = selectedAppId !== "all" ? `&app_id=${selectedAppId}` : "";
 
+  // Scale the fetch limit based on time range to capture all data
+  const verdictLimit = hours <= 24 ? 2000 : hours <= 168 ? 5000 : 10000;
+
   // Fetch all data
   const { data: verdictsData, isLoading: verdictsLoading } = useQuery<{ verdicts: DbVerdict[] }>({
-    queryKey: ["analytics-verdicts", selectedAppId],
-    queryFn: () => fetchApi<{ verdicts: DbVerdict[] }>(`/api/v1/verdicts/recent?limit=500${appQ}`),
+    queryKey: ["analytics-verdicts", selectedAppId, verdictLimit],
+    queryFn: () => fetchApi<{ verdicts: DbVerdict[] }>(`/api/v1/verdicts/recent?limit=${verdictLimit}${appQ}`),
     refetchInterval: 10000,
   });
 
@@ -292,10 +309,13 @@ export default function AnalyticsPage() {
       map[app] = (map[app] || 0) + 1;
     });
     return Object.entries(map)
-      .map(([app, count]) => ({ app: app.length > 16 ? app.slice(0, 16) + "…" : app, count }))
+      .map(([appId, count]) => {
+        const appName = apps.find((a) => a.id === appId)?.name || appId.slice(0, 8);
+        return { app: appName, count };
+      })
       .sort((a, b) => b.count - a.count)
       .slice(0, 8);
-  }, [filteredVerdicts]);
+  }, [filteredVerdicts, apps]);
 
   const confidenceDistribution = useMemo(() => {
     const buckets = [
