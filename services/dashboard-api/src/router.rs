@@ -105,6 +105,7 @@ pub fn dashboard_router(state: DashboardState) -> Router {
         .route("/api/v1/sessions/{call_id}/thread", get(get_session_thread))
         // Policy profiles (Round 2 — regulatory/geographic)
         .route("/api/v1/profiles", get(list_profiles))
+        .route("/api/v1/profiles/{profile_id}", axum::routing::put(update_profile_thresholds))
         .route("/api/v1/policies/{app_id}/profile", axum::routing::post(apply_profile))
         // System config
         .route("/api/v1/system/config", get(get_system_config))
@@ -862,20 +863,35 @@ async fn update_policy(
         ("responsibility", &responsibility_config),
     ];
     for (axis, config) in axis_configs {
-        sqlx::query(
-            "INSERT INTO policies (id, app_id, axis, threshold_config, version, is_active, created_at) \
-             VALUES ($1, $2, $3, $4, $5, true, NOW()) \
-             ON CONFLICT ON CONSTRAINT policies_app_id_axis_version_key \
-             DO UPDATE SET threshold_config = EXCLUDED.threshold_config, updated_at = NOW()"
+        // Update existing active row for this app+axis, clearing any profile association
+        let rows_affected = sqlx::query(
+            "UPDATE policies SET threshold_config = $1, version = $2, profile = NULL, updated_at = NOW() \
+             WHERE app_id = $3 AND axis = $4 AND is_active = true"
         )
-        .bind(Uuid::now_v7())
-        .bind(parsed_id)
-        .bind(axis)
         .bind(config)
         .bind(new_version)
+        .bind(parsed_id)
+        .bind(axis)
         .execute(pool)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error saving policy for axis {}: {e}", axis)))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error saving policy for axis {}: {e}", axis)))?
+        .rows_affected();
+
+        // If no existing row was found, insert one
+        if rows_affected == 0 {
+            sqlx::query(
+                "INSERT INTO policies (id, app_id, axis, threshold_config, version, is_active, profile, created_at) \
+                 VALUES ($1, $2, $3, $4, $5, true, NULL, NOW())"
+            )
+            .bind(Uuid::now_v7())
+            .bind(parsed_id)
+            .bind(axis)
+            .bind(config)
+            .bind(new_version)
+            .execute(pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error inserting policy for axis {}: {e}", axis)))?;
+        }
     }
 
     publish_policy_updated(&state, parsed_id, new_version);
@@ -2702,6 +2718,46 @@ async fn apply_profile(
         "profile": body.profile_id,
         "app_id": app_id,
         "message": format!("Applied '{}' profile to app. Thresholds updated for all axes.", profile.name)
+    })))
+}
+
+// === Update Profile Thresholds ===
+
+async fn update_profile_thresholds(
+    State(state): State<Arc<DashboardState>>,
+    Path(profile_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    // Verify profile exists
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM policy_profiles WHERE id = $1)"
+    )
+    .bind(&profile_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    if !exists {
+        return Err((StatusCode::NOT_FOUND, format!("Profile '{}' not found", profile_id)));
+    }
+
+    // Update the profile's default_thresholds
+    sqlx::query(
+        "UPDATE policy_profiles SET default_thresholds = $1 WHERE id = $2"
+    )
+    .bind(&body)
+    .bind(&profile_id)
+    .execute(pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    Ok(Json(serde_json::json!({
+        "updated": true,
+        "profile_id": profile_id,
+        "message": format!("Profile '{}' thresholds updated", profile_id)
     })))
 }
 

@@ -54,12 +54,13 @@ interface AppInfo {
 
 export default function PoliciesPage() {
   const user = useUser();
-  const isEditable = user ? canEditPolicies(user.role) : false;
+  const isEditable = user ? canEditPolicies(user.role) : true;
   const [apps, setApps] = useState<AppInfo[]>([]);
   const [selectedApp, setSelectedApp] = useState("");
 
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [policyVersion, setPolicyVersion] = useState<number | null>(null);
+  const [activeProfile, setActiveProfile] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/apps`)
@@ -122,6 +123,7 @@ export default function PoliciesPage() {
   const [profiles, setProfiles] = useState<PolicyProfileInfo[]>([]);
   const [applyingProfile, setApplyingProfile] = useState(false);
   const [confirmProfile, setConfirmProfile] = useState<PolicyProfileInfo | null>(null);
+  const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/profiles`)
@@ -148,14 +150,46 @@ export default function PoliciesPage() {
     finally { setApplyingProfile(false); }
   };
 
+  const selectProfile = (profile: PolicyProfileInfo) => {
+    setSelectedProfile(profile.id);
+    // Load this profile's stored thresholds into the form
+    const t = profile.default_thresholds;
+    const perf = (t.performance ?? {}) as Record<string, unknown>;
+    const cost = (t.cost ?? {}) as Record<string, unknown>;
+    const resp = (t.responsibility ?? {}) as Record<string, unknown>;
+    setThresholds({
+      block_threshold: (perf.block_threshold ?? resp.block_threshold ?? DEFAULT_THRESHOLDS.block_threshold) as number,
+      escalate_threshold: (perf.escalate_threshold ?? resp.escalate_threshold ?? perf.groundedness_threshold ?? DEFAULT_THRESHOLDS.escalate_threshold) as number,
+      max_tokens_per_request: (cost.max_tokens_per_request ?? DEFAULT_THRESHOLDS.max_tokens_per_request) as number,
+      retry_max_count: (cost.retry_max ?? DEFAULT_THRESHOLDS.retry_max_count) as number,
+      pii_detection: (resp.pii_detection ?? DEFAULT_THRESHOLDS.pii_detection) as boolean,
+      toxicity_detection: (resp.toxicity_detection ?? DEFAULT_THRESHOLDS.toxicity_detection) as boolean,
+      bias_detection: (resp.bias_detection ?? DEFAULT_THRESHOLDS.bias_detection) as boolean,
+      unsafe_content_enabled: ((resp.unsafe_action ?? "block") !== "off") as boolean,
+      secret_detection_enabled: ((resp.pii_action ?? "edit") !== "off") as boolean,
+      prompt_injection_enabled: DEFAULT_THRESHOLDS.prompt_injection_enabled,
+      hallucination_detection_enabled: ((perf.hallucination_action ?? "escalate") !== "off") as boolean,
+      groundedness_enabled: DEFAULT_THRESHOLDS.groundedness_enabled,
+      verbosity_enabled: DEFAULT_THRESHOLDS.verbosity_enabled,
+      semantic_pii_enabled: DEFAULT_THRESHOLDS.semantic_pii_enabled,
+    });
+  };
+
+  const deselectProfile = () => {
+    setSelectedProfile(null);
+    if (selectedApp) loadPolicy(selectedApp);
+  };
+
   const loadPolicy = async (appId: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/policies/${appId}`);
       if (res.ok) {
         const data = await res.json();
         setPolicyVersion(data.version ?? null);
-        // Canonical merged view across all axis rows — works whether values were
-        // last written by a manual save OR by applying a regulatory profile.
+        // Extract active profile from policies (all axes should have the same profile)
+        const profileId = data.policies?.[0]?.profile ?? null;
+        setActiveProfile(profileId);
+        // Canonical merged view across all axis rows
         const config = data.merged ?? data.policies?.[0]?.config;
         const checks = config?.checks ?? {};
         if (config) {
@@ -194,6 +228,7 @@ export default function PoliciesPage() {
   // Load policy whenever selectedApp changes (including initial load)
   useEffect(() => {
     if (selectedApp) {
+      setSelectedProfile(null);
       loadPolicy(selectedApp);
     }
   }, [selectedApp]);
@@ -203,16 +238,54 @@ export default function PoliciesPage() {
     setSaved(false);
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/policies/${selectedApp}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(thresholds),
-      });
-      if (res.ok) {
-        setSaved(true);
-        setTimeout(() => setSaved(false), 3000);
-        // Reload to pick up the new version number
-        loadPolicy(selectedApp);
+      if (selectedProfile) {
+        // Save thresholds to the profile's default_thresholds
+        const profilePayload = {
+          performance: {
+            groundedness_threshold: thresholds.escalate_threshold,
+            hallucination_action: thresholds.hallucination_detection_enabled ? "escalate" : "off",
+            block_threshold: thresholds.block_threshold,
+            escalate_threshold: thresholds.escalate_threshold,
+          },
+          cost: {
+            max_tokens_per_request: thresholds.max_tokens_per_request,
+            retry_max: thresholds.retry_max_count,
+          },
+          responsibility: {
+            bias_threshold: 0.7,
+            pii_action: thresholds.secret_detection_enabled ? "edit" : "off",
+            unsafe_action: thresholds.unsafe_content_enabled ? "block" : "off",
+            block_threshold: thresholds.block_threshold,
+            escalate_threshold: thresholds.escalate_threshold,
+          },
+        };
+        const res = await fetch(`${API_BASE}/api/v1/profiles/${selectedProfile}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(profilePayload),
+        });
+        if (res.ok) {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 3000);
+          // Refresh profiles list to reflect saved thresholds
+          const profilesRes = await fetch(`${API_BASE}/api/v1/profiles`);
+          if (profilesRes.ok) {
+            const data = await profilesRes.json();
+            setProfiles(data.profiles || []);
+          }
+        }
+      } else {
+        // Save thresholds to the app's active policies
+        const res = await fetch(`${API_BASE}/api/v1/policies/${selectedApp}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(thresholds),
+        });
+        if (res.ok) {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 3000);
+          loadPolicy(selectedApp);
+        }
       }
     } catch {
       // API might not be running
@@ -258,46 +331,6 @@ export default function PoliciesPage() {
                 v{policyVersion}
               </Badge>
             )}
-            {(() => {
-              const currentApp = apps.find(a => a.id === selectedApp);
-              const level = currentApp?.data_governance_level || "medium";
-              const levelColors: Record<string, string> = {
-                high: "bg-green-500/10 text-green-500 border-green-500/30",
-                medium: "bg-yellow-500/10 text-yellow-500 border-yellow-500/30",
-                low: "bg-red-500/10 text-red-500 border-red-500/30",
-              };
-              return (
-                <select
-                  value={level}
-                  onChange={async (e) => {
-                    if (!isEditable || !selectedApp) return;
-                    const newLevel = e.target.value;
-                    try {
-                      await fetch(`${API_BASE}/api/v1/apps/${selectedApp}/governance`, {
-                        method: "PUT",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ level: newLevel }),
-                      });
-                      setApps(apps.map(a => a.id === selectedApp ? { ...a, data_governance_level: newLevel } : a));
-                      loadPolicy(selectedApp);
-                    } catch { /* ignore */ }
-                  }}
-                  disabled={!isEditable}
-                  className={`text-[10px] font-medium px-2 py-1 rounded-md border cursor-pointer ${levelColors[level] || ""}`}
-                  title={
-                    level === "low"
-                      ? "Stricter thresholds: block ≥0.70, escalate ≥0.40, max 2K tokens"
-                      : level === "high"
-                      ? "Relaxed thresholds: block ≥0.95, escalate ≥0.75, max 8K tokens"
-                      : "Standard thresholds: block ≥0.90, escalate ≥0.60, max 4K tokens"
-                  }
-                >
-                  <option value="high">Gov: High (relaxed)</option>
-                  <option value="medium">Gov: Medium (standard)</option>
-                  <option value="low">Gov: Low (strict)</option>
-                </select>
-              );
-            })()}
             <Select
               value={selectedApp}
               onValueChange={(v) => setSelectedApp(v)}
@@ -307,42 +340,6 @@ export default function PoliciesPage() {
           </div>
         </div>
 
-        {/* Governance Level Impact */}
-        {(() => {
-          const currentApp = apps.find(a => a.id === selectedApp);
-          const level = currentApp?.data_governance_level || "medium";
-          const presets: Record<string, { block: number; escalate: number; groundedness: number; tokens: number; desc: string }> = {
-            low: { block: 0.70, escalate: 0.40, groundedness: 0.80, tokens: 2000, desc: "Untrusted data sources — stricter checks, lower confidence triggers flags" },
-            medium: { block: 0.90, escalate: 0.60, groundedness: 0.60, tokens: 4000, desc: "Standard data governance — balanced between safety and usability" },
-            high: { block: 0.95, escalate: 0.75, groundedness: 0.50, tokens: 8000, desc: "Well-governed data — relaxed checks, high confidence needed to trigger" },
-          };
-          const p = presets[level] || presets.medium;
-          return (
-            <Card className="border-dashed">
-              <CardContent className="pt-4 pb-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-xs font-medium">
-                      Data Governance: <span className={level === "low" ? "text-red-400" : level === "high" ? "text-green-400" : "text-yellow-400"}>{level.toUpperCase()}</span>
-                    </span>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">{p.desc}</p>
-                  </div>
-                  <div className="text-right text-[10px] font-mono text-muted-foreground space-y-0.5">
-                    <div>Block ≥ {p.block}</div>
-                    <div>Escalate ≥ {p.escalate}</div>
-                    <div>Groundedness ≥ {p.groundedness}</div>
-                    <div>Max tokens: {p.tokens.toLocaleString()}</div>
-                  </div>
-                </div>
-                <p className="text-[10px] text-muted-foreground/60 mt-2 border-t border-border/30 pt-2">
-                  Changing the governance level applies preset thresholds. You can then fine-tune individual values below.
-                  Regulatory profiles override these presets with regulation-specific defaults.
-                </p>
-              </CardContent>
-            </Card>
-          );
-        })()}
-
         {/* Regulatory Profile Selector (R2.2) */}
         {profiles.length > 0 && (
           <Card>
@@ -351,34 +348,77 @@ export default function PoliciesPage() {
             </CardHeader>
             <CardContent>
               <p className="text-xs text-muted-foreground mb-3">
-                Apply a preset profile to configure thresholds for specific regulatory environments.
+                Click a profile to view and edit its thresholds. Save updates that profile independently.
+                Use &quot;Apply to App&quot; to enforce a profile on the selected app.
               </p>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {profiles.map((p) => (
+              {selectedProfile && (
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-xs text-primary font-medium">
+                    Editing: {profiles.find(p => p.id === selectedProfile)?.name ?? selectedProfile}
+                  </p>
                   <button
-                    key={p.id}
-                    onClick={() => setConfirmProfile(p)}
-                    disabled={!isEditable || applyingProfile}
-                    className="text-left rounded-md border border-border p-3 hover:border-primary/50 hover:bg-muted/50 transition-colors disabled:opacity-50"
+                    onClick={deselectProfile}
+                    className="text-[10px] text-muted-foreground underline hover:text-foreground"
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{p.name}</span>
-                      <Badge variant="outline" className="text-[10px]">
-                        {p.risk_appetite}
-                      </Badge>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">
-                      {p.description}
-                    </p>
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {p.regulations.slice(0, 3).map((r) => (
-                        <Badge key={r} variant="secondary" className="text-[9px]">
-                          {r}
-                        </Badge>
-                      ))}
-                    </div>
+                    Back to app thresholds
                   </button>
-                ))}
+                </div>
+              )}
+              {!selectedProfile && activeProfile && (
+                <p className="text-xs text-emerald-500 mb-3 font-medium">
+                  App using profile: {profiles.find(p => p.id === activeProfile)?.name ?? activeProfile}
+                </p>
+              )}
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {profiles.map((p) => {
+                  const isSelected = selectedProfile === p.id;
+                  const isActive = activeProfile === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => selectProfile(p)}
+                      className={`text-left rounded-md border p-3 transition-all ${
+                        isSelected
+                          ? "border-primary bg-primary/5 shadow-lg shadow-primary/20 ring-2 ring-primary/40"
+                          : isActive
+                          ? "border-emerald-400 bg-emerald-50/5"
+                          : "border-border hover:border-primary/50 hover:bg-muted/50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{p.name}</span>
+                        <Badge variant="outline" className="text-[10px]">
+                          {p.risk_appetite}
+                        </Badge>
+                        {isSelected && (
+                          <Badge variant="default" className="text-[9px] ml-auto">Editing</Badge>
+                        )}
+                        {isActive && !isSelected && (
+                          <Badge variant="secondary" className="text-[9px] ml-auto bg-emerald-100 text-emerald-700">Enforced</Badge>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">
+                        {p.description}
+                      </p>
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {p.regulations.slice(0, 3).map((r) => (
+                          <Badge key={r} variant="secondary" className="text-[9px]">
+                            {r}
+                          </Badge>
+                        ))}
+                      </div>
+                      {isSelected && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setConfirmProfile(p); }}
+                          disabled={applyingProfile}
+                          className="mt-2 w-full text-[10px] font-medium py-1 rounded border border-primary/30 text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+                        >
+                          Apply to App
+                        </button>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </CardContent>
           </Card>
@@ -399,7 +439,7 @@ export default function PoliciesPage() {
               </p>
             ) : (
               <div className="space-y-2">
-                <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-3 text-[10px] uppercase tracking-wider text-muted-foreground/60 font-mono pb-1 border-b border-border/50">
+                <div className="grid grid-cols-[1fr_3.5rem_4rem_3rem_3rem_3.5rem] gap-x-2 text-[10px] uppercase tracking-wider text-muted-foreground/60 font-mono pb-1 border-b border-border/50">
                   <span>Check</span>
                   <span className="text-right">Blocked</span>
                   <span className="text-right">Escalated</span>
@@ -414,7 +454,7 @@ export default function PoliciesPage() {
                   return (
                     <div
                       key={`${s.check_name}-${s.axis}`}
-                      className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-3 items-center text-xs py-1.5 rounded-md hover:bg-muted/30 px-1 -mx-1"
+                      className="grid grid-cols-[1fr_3.5rem_4rem_3rem_3rem_3.5rem] gap-x-2 items-center text-xs py-1.5 rounded-md hover:bg-muted/30 px-1 -mx-1"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.blocks + s.escalates > 0 ? "bg-orange-400" : "bg-emerald-400"}`} />
@@ -693,7 +733,7 @@ export default function PoliciesPage() {
               disabled={saving}
               className="rounded-lg bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.15),0_0_12px_rgba(16,185,129,0.15)] hover:bg-emerald-400 hover:shadow-[0_1px_4px_rgba(0,0,0,0.2),0_0_16px_rgba(16,185,129,0.25)] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
             >
-              {saving ? "Saving..." : "Save Policy"}
+              {saving ? "Saving..." : selectedProfile ? `Save to ${profiles.find(p => p.id === selectedProfile)?.name ?? "Profile"}` : "Save Policy"}
             </button>
           ) : (
             <span className="rounded-lg border border-border px-5 py-2.5 text-sm text-muted-foreground/60">

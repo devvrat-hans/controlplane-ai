@@ -65,6 +65,10 @@ pub async fn proxy_handler(
     // Priority: explicit "session_id" field > X-Session-Id header > derived from messages hash
     let session_id: Option<Uuid> = extract_session_id(&request_body, &headers);
 
+    // Extract app_id: explicit "app_id" in body > X-App-Id header > default
+    let app_id: Uuid = extract_app_id(&request_body, &headers)
+        .unwrap_or(state.default_app_id);
+
     // Forward to upstream
     let upstream_path = state.provider.rewrite_path(&path, &model_in_body);
     let upstream_url = format!("{}{}", state.upstream_base_url, upstream_path);
@@ -140,7 +144,6 @@ pub async fn proxy_handler(
     };
 
     // Persist intercepted_call to DB (must happen before verdict events)
-    let app_id = state.default_app_id;
     let has_tool_use = fast_path_result.has_tool_use;
     if let Some(ref pool) = state.pool {
         let req_json: Option<serde_json::Value> = serde_json::from_slice(&request_body).ok();
@@ -419,6 +422,30 @@ fn extract_session_id(request_body: &[u8], headers: &axum::http::HeaderMap) -> O
                     uuid_bytes[8] = (uuid_bytes[8] & 0x3F) | 0x80; // variant
                     return Some(Uuid::from_bytes(uuid_bytes));
                 }
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract app_id from the request.
+/// Checks: 1) explicit "app_id" in request body, 2) X-App-Id header.
+fn extract_app_id(request_body: &[u8], headers: &axum::http::HeaderMap) -> Option<Uuid> {
+    // 1. Check for explicit app_id in request body
+    if let Ok(body) = serde_json::from_slice::<serde_json::Value>(request_body) {
+        if let Some(aid) = body.get("app_id").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = Uuid::parse_str(aid) {
+                return Some(parsed);
+            }
+        }
+    }
+
+    // 2. Check X-App-Id header
+    if let Some(header_val) = headers.get("x-app-id") {
+        if let Ok(s) = header_val.to_str() {
+            if let Ok(parsed) = Uuid::parse_str(s) {
+                return Some(parsed);
             }
         }
     }

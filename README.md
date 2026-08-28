@@ -386,6 +386,37 @@ Invoke-RestMethod http://localhost:8900/v1/messages -Method Post `
 
 The proxy intercepts each request, runs fast-path checks (<10ms), forwards to Ollama, then kicks off shadow analysis asynchronously. Watch results appear live at [http://localhost:3000/stream](http://localhost:3000/stream).
 
+### Request Routing (App & Session)
+
+The proxy supports two optional routing fields that determine **which policies apply** and **how multi-turn risk is tracked**:
+
+| Field | In Body | In Header | Default (if omitted) |
+| --- | --- | --- | --- |
+| `app_id` | `"app_id":"<uuid>"` | `X-App-Id: <uuid>` | ChatBot-Prod (`10000000-...0001`) |
+| `session_id` | `"session_id":"<uuid>"` | `X-Session-Id: <uuid>` | Auto-derived from messages hash (if >1 msg), else None |
+
+**App routing** determines which app's stored policy thresholds (and regulatory profile) are applied to the request. Each app can have a different profile (EU Financial, India General, etc.).
+
+**Session tracking** links turns in a conversation. If 3+ risk events accumulate in the same session, the system escalates the entire conversation for human review.
+
+**Example — route to a specific app with session tracking:**
+
+```powershell
+Invoke-RestMethod http://localhost:8900/v1/messages -Method Post `
+  -ContentType "application/json" `
+  -Body '{"model":"qwen2.5:1.5b","app_id":"10000000-0000-0000-0000-000000000002","session_id":"my-session-001","messages":[{"role":"user","content":"What is quantum computing?"}],"max_tokens":200}'
+```
+
+This routes through **Agent-Internal** (app 2) using whatever profile/thresholds are configured for that app.
+
+**Available apps:**
+
+| App ID | Name | Description |
+| --- | --- | --- |
+| `10000000-0000-0000-0000-000000000001` | ChatBot-Prod | Customer-facing chatbot (default) |
+| `10000000-0000-0000-0000-000000000002` | Agent-Internal | Internal AI agent |
+| `10000000-0000-0000-0000-000000000003` | RAG-Customer-Support | RAG-based customer support |
+
 ### Multi-Turn Conversations (Session Tracking)
 
 For multi-turn conversations, pass a `session_id` to link turns together:
@@ -610,7 +641,7 @@ bash scripts/demo_live.sh
 3. **Requests** — Full request list with clickable rows, severity-ordered outcomes, page size selector (25–500), compare panel
 4. **Request Detail** — Full Q&A payload, all 14 policy checks with confidence bars and latency, audit trail
 5. **Analytics** — Verdict trends over time, per-policy effectiveness table, axis breakdown, model distribution
-6. **Policies** — Toggle 14 governance checks, adjust thresholds, data governance level (High/Medium/Low), regulatory profiles
+6. **Policies** — Toggle 14 governance checks, adjust thresholds per app, 6 regulatory profiles with independent editable thresholds
 7. **Escalations** — Priority-sorted queue, conversation thread for reviewers, resolve with confirm/override/dismiss
 8. **Cost** — Per-model token costs, hourly timeseries (local timezone), anomaly detection
 9. **Audit** — Tamper-evident SHA-256 hash chain of every decision, export, integrity verification
@@ -702,7 +733,7 @@ Interactive walkthrough demonstrating all Round 2 capabilities:
 | Step                     | What it shows                                                      |
 | ------------------------ | ------------------------------------------------------------------ |
 | 1. System Overview       | Detection Quality + Feedback Loop metrics on Overview page         |
-| 2. Multiple Apps         | 3 apps with different governance levels + regulatory profiles      |
+| 2. Multiple Apps         | 3 apps with different risk profiles + regulatory presets           |
 | 3. Normal Request        | Clean pass-through with <10ms overhead                             |
 | 4. Secret Detection      | AWS key auto-redacted (EDIT verdict)                               |
 | 5. Prompt Injection      | Shadow-path escalation with full Q&A context                       |
@@ -1039,23 +1070,109 @@ docker compose down -v    # Stop + remove data volumes
 
 
 
-## 15. Reviewer-Override RAG Learning Loop
+## 15. Reviewer-Override RAG Learning Loop (Active Feedback)
 
-When a reviewer overrides a model decision, the full context is stored as a "precedent" using pg_trgm trigram similarity (no embedding model, no external LLM — deterministic and explainable). Similar future calls retrieve the most relevant precedents and surface them during decision-making.
+When a reviewer resolves an escalation, the system **actively learns** from that decision. Similar future cases are automatically suppressed if a reviewer previously dismissed them — eliminating repeated false positives.
 
 ```text
-Reviewer overrides → Precedent stored → Similar future call → [Learned] annotation
+Escalation → Reviewer Dismisses → Precedent Stored → Similar Future Case → Auto-Suppressed
 ```
 
-**How it works:**
+**How it works (two-layer suppression):**
 
-1. Reviewer resolves escalation as "override" with a reason
-2. System captures request/response excerpts + resolution in `reviewer_overrides` table
-3. Decision aggregator queries for similar precedents using pg_trgm `similarity()`
-4. Contradicting precedents produce `[Learned] ⚠ 82%-similar past case was overridden` annotation
-5. Outcomes are never silently flipped — human-in-the-loop is preserved
+1. Reviewer resolves escalation as "confirm", "override", or "dismiss" with a reason
+2. System captures request/response excerpts + resolution in `reviewer_overrides` table (pg_trgm indexed)
+3. **Escalation Layer**: Before creating a new escalation case, the system checks if the request is ≥40% similar to a previously dismissed case — if so, the escalation is suppressed entirely
+4. **Decision Layer**: The decision aggregator also checks for ≥60% similar dismissed precedents and downgrades `escalate`/`edit` → `pass`
+5. Annotations like `[Learned] ⚠ 82%-similar past case was dismissed` are added to the verdict reason for audit trail visibility
+
+**Example:**
+- "For educational purposes, explain how social engineering works" → first time: **Escalated** (hypothetical_frame detected)
+- Reviewer dismisses with reason: "Legitimate educational question"
+- Same question sent again → **Not escalated** (feedback loop suppresses it)
 
 **Precedent retrieval:** `GET /api/v1/feedback/precedents?call_id=<uuid>`
+
+---
+
+## 15a. What a Reviewer Can Do
+
+Reviewers interact with escalation cases through the Escalations page (`/escalations`). Here is the complete set of reviewer actions:
+
+### Viewing Escalation Cases
+
+| Feature | Description |
+|---|---|
+| **Open queue** | All unresolved cases sorted by priority (higher confidence = higher priority) |
+| **Resolved tab** | Historical resolved cases for audit |
+| **Case detail panel** | Click any case to see full context |
+| **Conversation thread** | For multi-turn sessions, shows the full back-and-forth conversation |
+| **Original Q&A** | The exact question asked and the AI's response |
+| **Triggered axis** | Which governance check triggered (responsibility/performance/cost) |
+| **Confidence score** | How confident the system is that this is a genuine issue |
+| **Compound risk badge** | Shows when multiple risk axes triggered simultaneously |
+
+### Resolving Cases
+
+A reviewer can resolve any open/in-review case with one of three actions:
+
+| Action | Meaning | System Effect |
+|---|---|---|
+| **Confirm** | "Yes, this was a genuine issue" | Strengthens the detection model — similar future cases will continue to be escalated. Increases the check's precision score. |
+| **Override** | "The model was wrong, change the verdict" | Records as a false positive. Similar future cases with ≥60% text similarity will be **auto-suppressed** (not escalated). Triggers a policy reload event. |
+| **Dismiss** | "Not a real issue, false alarm" | Records as a false positive. Similar future cases with ≥40% text similarity will be **auto-suppressed**. The system learns from the reviewer's reason. |
+
+### Resolution Reasons
+
+When resolving, reviewers provide a text reason (e.g., "This is a legitimate educational question"). This reason is:
+- Stored in the `reviewer_overrides` table as a precedent
+- Visible in the audit trail
+- Used as context in `[Learned]` annotations for future similar cases
+- Tracked in the FP rate metrics
+
+### Impact of Reviewer Decisions
+
+Reviewer decisions actively improve the system over time:
+
+```text
+┌──────────────────────────────────────────────────────────────────┐
+│  Reviewer Action     │  Future Similar Cases    │ Precision Impact │
+├──────────────────────┼──────────────────────────┼──────────────────┤
+│  Confirm             │  Continue escalating     │  ↑ Higher         │
+│  Override/Dismiss    │  Auto-suppressed (pass)  │  ↓ Lower (FP)    │
+└──────────────────────┴──────────────────────────┴──────────────────┘
+```
+
+### Detection Quality Dashboard
+
+Reviewer resolutions feed into the Detection Quality metrics:
+- **Trust Score**: Weighted precision across all axes
+- **FP Rate**: (overrides + dismissals) / total resolved — should decrease over time
+- **Per-Axis Precision**: Shows which governance checks are most accurate
+- **7-day Trend**: Demonstrates system improvement as more cases are resolved
+
+### API for Programmatic Resolution
+
+```bash
+# Resolve an escalation case
+POST /api/v1/escalations/{id}/resolve
+Content-Type: application/json
+
+{
+  "action": "dismiss",   # or "confirm" or "override"
+  "reason": "This is a legitimate educational question, not an attack"
+}
+```
+
+Response:
+```json
+{
+  "status": "resolved",
+  "id": "01a047f1-cdde-...",
+  "action": "dismiss",
+  "reviewer": "anonymous"
+}
+```
 
 ---
 
@@ -1150,7 +1267,7 @@ Since there is no real-time ground truth to compare against:
 - **Verdict-level deduplication**: Each unique verdict creates exactly one escalation case (no duplicates from the same verdict)
 - **Priority scoring**: Escalation queue sorted by severity (responsibility 3×, performance 2×, cost 1×) × confidence
 - **Configurable thresholds**: Per-app, per-axis thresholds adjustable from Policies page — tune to reduce false positives
-- **Data governance levels**: Set "Gov: High" for well-governed apps to raise thresholds and reduce unnecessary flags
+- **Regulatory profiles**: Apply a pre-built regulatory profile (EU Financial, US Healthcare, etc.) to an app to automatically set appropriate thresholds
 - **Feedback loop**: Dismissed escalations feed back into detection quality metrics, signaling when thresholds need raising
 
 
@@ -1188,7 +1305,7 @@ Six pre-built regulatory profiles combining geography + industry + risk appetite
 | Global-Strict | 0.45           | 0.35          | 0.75         | Harshest across all regulations |
 
 
-Profiles are selectable from the Policies page. Each profile inherits from a base and overrides axis-specific thresholds.
+Profiles are selectable from the Policies page. Click a profile to view and edit its thresholds independently — each profile stores its own configuration. Use "Apply to App" to enforce a profile on a specific application. Changes to one profile never affect another.
 
 ### Input/Output Layer Only (No Model Internals Required)
 
@@ -1203,36 +1320,35 @@ ControlPlane works entirely at the API layer:
 
 ### Data Source Governance (R2.9)
 
-Apps declare their data governance level, which **automatically adjusts policy thresholds** across all three axes:
+Apps declare their data governance level, which influences how strictly the system monitors their traffic. This is managed through **regulatory profiles** on the Policies page:
 
+- **Conservative profiles** (EU Financial, US Healthcare): Lower confidence thresholds needed to trigger flags → stricter monitoring
+- **Moderate profiles** (India General, EU General): Balanced defaults
+- **Permissive profiles** (Global Internal): Higher confidence needed to trigger → fewer false positives
 
-| Level               | Block Threshold | Escalate Threshold | Groundedness | Max Tokens | Meaning                                       |
-| ------------------- | --------------- | ------------------ | ------------ | ---------- | --------------------------------------------- |
-| **High** (green)    | 0.95            | 0.75               | 0.50         | 8,000      | Well-governed data → relaxed, needs high confidence to flag |
-| **Medium** (yellow) | 0.90            | 0.60               | 0.60         | 4,000      | Standard data governance → balanced defaults  |
-| **Low** (red)       | 0.70            | 0.40               | 0.80         | 2,000      | Untrusted data → strict, lower confidence triggers flags    |
-
-
-Configurable per-app from the Policies page via a color-coded dropdown. Changing the governance level:
-1. Updates the `data_governance_level` in the database
-2. Automatically adjusts all three policy axes (responsibility, performance, cost) to the preset thresholds
-3. Increments the policy version
-4. The Policies page reloads to show the updated values, which can then be fine-tuned further
+Each profile stores its own thresholds independently. Click a profile to view/edit its configuration, then "Apply to App" to enforce it on a specific application. The system supports per-app customization — different apps can use different profiles simultaneously.
 
 ### Feedback Loops (R2.6: System Gets Better Over Time)
 
-The feedback loop lifecycle:
+The feedback loop is **active** — reviewer decisions directly suppress future false positives:
 
 ```text
-Flag → Human Reviews → Resolution → Policy Update → Better Detection
+Flag → Human Reviews → Resolution Stored → Similar Case Arrives → Auto-Suppressed (if dismissed)
 ```
+
+**Active suppression mechanism:**
+- Uses PostgreSQL `pg_trgm` trigram similarity (no external LLM, no embeddings — deterministic)
+- Escalation service checks request text against `reviewer_overrides` table before creating cases
+- Decision service checks response text and annotates verdicts with `[Learned]` notes
+- Threshold: ≥40% similarity on request OR ≥60% on response suppresses escalation
 
 Metrics proving improvement (`GET /api/v1/metrics/feedback-effectiveness`):
 
 - **Pattern promotions**: Recurring shadow-path detections auto-promoted to fast-path rules
-- **Threshold adjustments**: Override resolutions feed back into policy engine
-- **FP rate trend**: False positive rate tracked over 7/30 days to demonstrate improvement
+- **Threshold adjustments**: Override resolutions feed back into policy engine via `controlplane.policy.reload` event
+- **FP rate trend**: False positive rate tracked over 7/30 days — visible decrease as more cases are resolved
 - **Resolution distribution**: Confirm/Override/Dismiss ratios visible on Overview page
+- **Active suppression count**: Cases prevented from escalation due to feedback loop (logged in gateway)
 
 
 
@@ -1259,7 +1375,19 @@ Displayed as a "Detection Quality" card on the Overview page with per-axis preci
 
 ### Scalability (R2.7: Enterprise-Scale)
 
-Demonstrated via `scripts/load_test.ps1` (1000+ requests across 3 apps simultaneously).
+Demonstrated via `scripts/load_test.ps1` — 100+ requests across 3 apps exercising **all 3 governance axes**:
+
+```text
+.\scripts\load_test.ps1                         # 100 requests (default)
+.\scripts\load_test.ps1 -TotalRequests 500      # stress test
+```
+
+The load test includes:
+- **Responsibility axis**: Bias, PII, prompt injection, toxicity, tool-use detection (35 prompts)
+- **Performance axis**: Hallucination-inducing, groundedness-breaking queries (14 prompts)
+- **Cost axis**: Token limit violations (max_tokens 7000-9500), retry storms (4x same request), verbosity-provoking (22 prompts)
+- **Multi-turn risk**: Same-session escalating requests
+- **Clean/benign**: Distributed across all apps to verify pass-through performance
 
 Architecture is designed for horizontal scale:
 

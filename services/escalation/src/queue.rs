@@ -310,6 +310,42 @@ fn truncate_excerpt(s: &str) -> String {
     s.chars().take(2000).collect()
 }
 
+/// Feedback loop suppression: check if the request text for this call is similar
+/// (>=40% trigram similarity) to a previously dismissed/overridden case.
+/// Uses request_payload since response may not be stored yet when fast-path fires.
+async fn check_feedback_suppression(pool: &PgPool, app_id: Uuid, call_id: Uuid) -> bool {
+    let request_text: Option<String> = sqlx::query_scalar(
+        "SELECT LEFT(request_payload::text, 2000) FROM intercepted_calls WHERE id = $1"
+    )
+    .bind(call_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    let text = match request_text {
+        Some(t) if !t.trim().is_empty() => t,
+        _ => return false,
+    };
+
+    // Check for a similar dismissed/overridden precedent (>=40% on request, >=60% on response)
+    let found: bool = sqlx::query_scalar(
+        "SELECT EXISTS( \
+            SELECT 1 FROM reviewer_overrides \
+            WHERE (app_id = $2 OR $2 IS NULL) \
+              AND reviewer_action IN ('dismiss', 'override') \
+              AND COALESCE(similarity(request_excerpt, $1), 0) >= 0.4 \
+        )"
+    )
+    .bind(&text)
+    .bind(app_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+
+    found
+}
+
 /// Background subscriber that creates escalation cases from verdict events.
 pub fn spawn_escalation_listener(
     pool: PgPool,
@@ -374,6 +410,20 @@ pub fn spawn_escalation_listener(
                                         info!(
                                             verdict_id = %verdict.id,
                                             "Escalation dedup: verdict already has a case"
+                                        );
+                                        continue;
+                                    }
+
+                                    // Feedback loop: check if a similar case was previously
+                                    // dismissed by a reviewer. If so, suppress this escalation.
+                                    let suppressed = check_feedback_suppression(
+                                        &queue.pool, app_id, verdict.call_id
+                                    ).await;
+                                    if suppressed {
+                                        info!(
+                                            verdict_id = %verdict.id,
+                                            call_id = %verdict.call_id,
+                                            "Feedback loop: suppressed escalation (similar case previously dismissed)"
                                         );
                                         continue;
                                     }
