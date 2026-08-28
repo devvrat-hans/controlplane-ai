@@ -328,13 +328,13 @@ async fn check_feedback_suppression(pool: &PgPool, app_id: Uuid, call_id: Uuid) 
         _ => return false,
     };
 
-    // Check for a similar dismissed/overridden precedent (>=40% on request, >=60% on response)
+    // Check for a similar dismissed/overridden precedent (>=60% on request)
     let found: bool = sqlx::query_scalar(
         "SELECT EXISTS( \
             SELECT 1 FROM reviewer_overrides \
             WHERE (app_id = $2 OR $2 IS NULL) \
               AND reviewer_action IN ('dismiss', 'override') \
-              AND COALESCE(similarity(request_excerpt, $1), 0) >= 0.4 \
+              AND COALESCE(similarity(request_excerpt, $1), 0) >= 0.6 \
         )"
     )
     .bind(&text)

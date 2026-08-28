@@ -2018,6 +2018,7 @@ async fn verify_audit_chain(
 struct EscalationListParams {
     status: Option<String>,
     limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -2043,7 +2044,8 @@ async fn list_escalations(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
-    let limit = params.limit.unwrap_or(50).min(200);
+    let limit = params.limit.unwrap_or(25).min(500);
+    let pg_offset = params.offset.unwrap_or(0).max(0);
     let status = params.status.unwrap_or_else(|| "open".to_string());
     let filter_all = status.eq_ignore_ascii_case("all");
     let filter_all_open = status.eq_ignore_ascii_case("all_open");
@@ -2066,22 +2068,20 @@ async fn list_escalations(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?.0
     };
 
-    let order_clause = "ORDER BY \
-           CASE WHEN axis = 'responsibility' THEN 3 WHEN axis = 'performance' THEN 2 ELSE 1 END * confidence DESC, \
-           created_at ASC";
+    let order_clause = "ORDER BY created_at DESC";
 
     let query_str = if filter_all {
         format!("SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
-         FROM escalation_cases {order_clause} LIMIT $1")
+         FROM escalation_cases {order_clause} LIMIT $1 OFFSET $2")
     } else if filter_all_open {
         format!("SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
-         FROM escalation_cases WHERE status IN ('open', 'in_review') {order_clause} LIMIT $1")
+         FROM escalation_cases WHERE status IN ('open', 'in_review') {order_clause} LIMIT $1 OFFSET $2")
     } else {
         format!("SELECT id, call_id, verdict_id, app_id, axis, confidence, reason, status, assigned_to, resolution, resolution_reason, created_at, resolved_at \
-         FROM escalation_cases WHERE status = $2 {order_clause} LIMIT $1")
+         FROM escalation_cases WHERE status = $3 {order_clause} LIMIT $1 OFFSET $2")
     };
 
-    let mut q = sqlx::query_as::<_, EscalationRow>(&query_str).bind(limit);
+    let mut q = sqlx::query_as::<_, EscalationRow>(&query_str).bind(limit).bind(pg_offset);
     if !filter_all && !filter_all_open {
         q = q.bind(&status);
     }

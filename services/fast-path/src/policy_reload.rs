@@ -196,11 +196,9 @@ fn merge_policies_into_rules(rows: &[PolicyRow]) -> FastPathRuleSet {
 
         match row.axis.as_str() {
             "cost" => {
-                if let Some(max_tokens) = config.get("max_tokens_per_request").and_then(|v| v.as_i64()) {
-                    // Use the most restrictive cap across all loaded policies
-                    let current = rules.max_tokens_per_request.unwrap_or(i32::MAX);
-                    rules.max_tokens_per_request = Some(current.min(max_tokens as i32));
-                }
+                // Per-app caps are now passed via request context (max_tokens field).
+                // Global cap is only set if a single policy explicitly defines a global limit.
+                // Do NOT merge min across apps — that makes the strictest app's cap apply to all.
                 if let Some(retry_max) = config.get("retry_max").and_then(|v| v.as_u64()) {
                     rules.retry_max_count = rules.retry_max_count.min(retry_max as u32);
                 }
@@ -245,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_cost_policy_extracts_cap() {
+    fn merge_cost_policy_extracts_retry_settings() {
         let rows = vec![PolicyRow {
             axis: "cost".to_string(),
             threshold_config: serde_json::json!({
@@ -257,7 +255,8 @@ mod tests {
         }];
 
         let rules = merge_policies_into_rules(&rows);
-        assert_eq!(rules.max_tokens_per_request, Some(4096));
+        // Per-app caps are now handled via request context, not globally
+        assert!(rules.max_tokens_per_request.is_none());
         assert_eq!(rules.retry_max_count, 3);
         assert_eq!(rules.retry_window_seconds, 30);
     }
@@ -282,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_multiple_cost_policies_uses_most_restrictive() {
+    fn merge_multiple_cost_policies_no_global_cap() {
         let rows = vec![
             PolicyRow {
                 axis: "cost".to_string(),
@@ -297,7 +296,8 @@ mod tests {
         ];
 
         let rules = merge_policies_into_rules(&rows);
-        assert_eq!(rules.max_tokens_per_request, Some(4096));
+        // Per-app caps handled via request context now
+        assert!(rules.max_tokens_per_request.is_none());
     }
 
     #[test]

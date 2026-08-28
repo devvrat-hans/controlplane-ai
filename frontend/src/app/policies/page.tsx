@@ -121,8 +121,6 @@ export default function PoliciesPage() {
     regulations: string[];
   }
   const [profiles, setProfiles] = useState<PolicyProfileInfo[]>([]);
-  const [applyingProfile, setApplyingProfile] = useState(false);
-  const [confirmProfile, setConfirmProfile] = useState<PolicyProfileInfo | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
 
   useEffect(() => {
@@ -131,24 +129,6 @@ export default function PoliciesPage() {
       .then((data: { profiles: PolicyProfileInfo[] }) => setProfiles(data.profiles || []))
       .catch((err) => console.error("Failed to load profiles:", err));
   }, []);
-
-  const applyProfile = async (profileId: string) => {
-    if (!selectedApp || !isEditable) return;
-    setApplyingProfile(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/policies/${selectedApp}/profile`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile_id: profileId }),
-      });
-      if (res.ok) {
-        await loadPolicy(selectedApp);
-        setSaved(true);
-        setTimeout(() => setSaved(false), 3000);
-      }
-    } catch { /* API might not be running */ }
-    finally { setApplyingProfile(false); }
-  };
 
   const selectProfile = (profile: PolicyProfileInfo) => {
     setSelectedProfile(profile.id);
@@ -340,8 +320,8 @@ export default function PoliciesPage() {
           </div>
         </div>
 
-        {/* Regulatory Profile Selector (R2.2) */}
-        {profiles.length > 0 && (
+        {/* Regulatory Profile Selector — only shown for Agent-Internal (App1) */}
+        {profiles.length > 0 && selectedApp === "10000000-0000-0000-0000-000000000002" && (
           <Card>
             <CardHeader>
               <CardTitle className="text-sm font-medium">Regulatory Profile</CardTitle>
@@ -349,7 +329,6 @@ export default function PoliciesPage() {
             <CardContent>
               <p className="text-xs text-muted-foreground mb-3">
                 Click a profile to view and edit its thresholds. Save updates that profile independently.
-                Use &quot;Apply to App&quot; to enforce a profile on the selected app.
               </p>
               {selectedProfile && (
                 <div className="flex items-center gap-2 mb-3">
@@ -407,15 +386,6 @@ export default function PoliciesPage() {
                           </Badge>
                         ))}
                       </div>
-                      {isSelected && (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setConfirmProfile(p); }}
-                          disabled={applyingProfile}
-                          className="mt-2 w-full text-[10px] font-medium py-1 rounded border border-primary/30 text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
-                        >
-                          Apply to App
-                        </button>
-                      )}
                     </button>
                   );
                 })}
@@ -537,13 +507,13 @@ export default function PoliciesPage() {
                   <div className="absolute inset-y-0 left-0 right-0 my-auto h-1.5 rounded-full bg-border/60" />
                   <div
                     className="absolute inset-y-0 left-0 my-auto h-1.5 rounded-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-150"
-                    style={{ width: `${((thresholds.max_tokens_per_request - 500) / (16000 - 500)) * 100}%` }}
+                    style={{ width: `${((thresholds.max_tokens_per_request - 10) / (16000 - 10)) * 100}%` }}
                   />
                   <input
                     type="range"
-                    min={500}
+                    min={10}
                     max={16000}
-                    step={500}
+                    step={10}
                     value={thresholds.max_tokens_per_request}
                     onChange={(e) =>
                       setThresholds((t) => ({ ...t, max_tokens_per_request: parseInt(e.target.value) }))
@@ -552,7 +522,7 @@ export default function PoliciesPage() {
                   />
                 </div>
                 <div className="flex justify-between text-[10px] text-muted-foreground/50 mt-1 font-mono">
-                  <span>500</span>
+                  <span>10</span>
                   <span>16,000</span>
                 </div>
               </div>
@@ -749,38 +719,6 @@ export default function PoliciesPage() {
         </div>
       </div>
 
-      {/* Profile apply confirmation dialog */}
-      {confirmProfile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px]" onClick={() => setConfirmProfile(null)}>
-          <div className="w-[380px] rounded-xl border border-border bg-card p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-sm font-semibold mb-2">Apply {confirmProfile.name}?</h3>
-            <p className="text-xs text-muted-foreground mb-4">
-              This will overwrite your current thresholds with the <strong>{confirmProfile.name}</strong> profile defaults.
-              Existing checks and kill-switches will be updated. You can always save a new version afterward.
-            </p>
-            <div className="flex flex-wrap gap-1 mb-4">
-              {confirmProfile.regulations.map((r) => (
-                <Badge key={r} variant="secondary" className="text-[9px]">{r}</Badge>
-              ))}
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmProfile(null)}
-                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => { applyProfile(confirmProfile.id); setConfirmProfile(null); }}
-                disabled={applyingProfile}
-                className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              >
-                {applyingProfile ? "Applying..." : "Apply Profile"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </DashboardShell>
   );
 }
