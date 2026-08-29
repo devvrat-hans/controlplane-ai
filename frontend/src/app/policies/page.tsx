@@ -166,10 +166,35 @@ export default function PoliciesPage() {
       if (res.ok) {
         const data = await res.json();
         setPolicyVersion(data.version ?? null);
-        // Extract active profile from policies (all axes should have the same profile)
         const profileId = data.policies?.[0]?.profile ?? null;
         setActiveProfile(profileId);
-        // Canonical merged view across all axis rows
+
+        // If the app has an active profile, use the profile's authoritative
+        // defaults so the UI always reflects the profile — even if the stored
+        // threshold_config drifted (e.g. from a manual slider save).
+        if (profileId) {
+          const matchedProfile = profiles.find((p) => p.id === profileId);
+          if (matchedProfile) {
+            selectProfile(matchedProfile);
+            return;
+          }
+          // Profile not loaded yet — try fetching it directly
+          try {
+            const profRes = await fetch(`${API_BASE}/api/v1/profiles`);
+            if (profRes.ok) {
+              const profData = await profRes.json();
+              const freshProfiles: PolicyProfileInfo[] = profData.profiles || [];
+              setProfiles(freshProfiles);
+              const found = freshProfiles.find((p) => p.id === profileId);
+              if (found) {
+                selectProfile(found);
+                return;
+              }
+            }
+          } catch { /* fall through to stored config */ }
+        }
+
+        // No active profile — use the stored per-app policy config
         const config = data.merged ?? data.policies?.[0]?.config;
         const checks = config?.checks ?? {};
         if (config) {
@@ -181,7 +206,6 @@ export default function PoliciesPage() {
             pii_detection: checks.pii_detection ?? config.pii_detection ?? DEFAULT_THRESHOLDS.pii_detection,
             toxicity_detection: checks.toxicity_detection ?? config.toxicity_detection ?? DEFAULT_THRESHOLDS.toxicity_detection,
             bias_detection: checks.bias_detection ?? config.bias_detection ?? DEFAULT_THRESHOLDS.bias_detection,
-            // Engine-format actions double as kill-switches ("off" = disabled)
             unsafe_content_enabled:
               checks.unsafe_content_enabled ?? (config.unsafe_content_enabled ?? (config.unsafe_action ? config.unsafe_action !== "off" : DEFAULT_THRESHOLDS.unsafe_content_enabled)),
             secret_detection_enabled:
@@ -245,9 +269,17 @@ export default function PoliciesPage() {
           body: JSON.stringify(profilePayload),
         });
         if (res.ok) {
+          // Re-apply the profile to the app so the policies table stays in
+          // sync with the profile's updated defaults.
+          if (selectedApp) {
+            await fetch(`${API_BASE}/api/v1/policies/${selectedApp}/profile`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ profile_id: selectedProfile }),
+            });
+          }
           setSaved(true);
           setTimeout(() => setSaved(false), 3000);
-          // Refresh profiles list to reflect saved thresholds
           const profilesRes = await fetch(`${API_BASE}/api/v1/profiles`);
           if (profilesRes.ok) {
             const data = await profilesRes.json();

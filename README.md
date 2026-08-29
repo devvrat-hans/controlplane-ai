@@ -28,40 +28,18 @@ export COLIMA_HOME=/tmp/colima && mkdir -p /tmp/colima
 colima start --cpu 4 --memory 8 --disk 60
 export DOCKER_HOST=unix:///tmp/colima/default/docker.sock
 
-# 2. Start everything
+# 2. Start everything (For Windows User start from here)
 docker-compose up --build
 
 # 3. Open the dashboard
 open http://localhost:3000
 ```
 
-**Mac / Linux (local — requires Rust, Node, PostgreSQL, Ollama):**
+**Local setup (requires Rust, Node, PostgreSQL, Ollama):**
 
-```bash
-# 1. Start everything (Ollama + Gateway + Frontend)
-bash scripts/start_local.sh
+See [Section 4 — Run locally](#4-run-locally) for the Three-Terminal Manual Start.
 
-# 2. Seed demo data (in another terminal)
-bash scripts/demo_showcase.sh
-
-# 3. Open the dashboard
-open http://localhost:3000
-```
-
-**Windows (PowerShell):**
-
-```powershell
-# 1. Start everything (Ollama + Gateway + Frontend)
-.\scripts\start_local.ps1
-
-# 2. Seed demo data (in another terminal)
-.\scripts\demo_showcase.ps1
-
-# 3. Open the dashboard
-Start-Process http://localhost:3000
-```
-
-That's it. No API keys needed — runs 100% locally with Ollama.
+No API keys needed — runs 100% locally with Ollama.
 
 ---
 
@@ -176,30 +154,6 @@ App → ControlPlane Proxy (:8900) → AI Model Provider (Ollama/OpenCode/Anthro
 | PostgreSQL    | `psql --version`   | `psql --version`   |
 | Ollama        | `ollama --version` | `ollama --version` |
 
-
-### One-Command Start
-
-**Mac / Linux:**
-
-```bash
-bash scripts/start_local.sh
-```
-
-**Windows (PowerShell):**
-
-```powershell
-.\scripts\start_local.ps1
-```
-
-This automatically:
-
-1. Starts Ollama (if not running)
-2. Pulls `qwen2.5:1.5b` model (~1GB, first time only)
-3. Tests Ollama with a quick request
-4. Runs database migrations if needed
-5. Builds and starts the Rust gateway
-6. Starts the Next.js frontend
-7. Shows all URLs and quick test commands
 
 ### Three-Terminal Manual Start
 
@@ -554,69 +508,20 @@ source ~/.zshrc
 
 ## 6. Demo
 
-### Seed Historical Data
+### Demo Flow
 
-**Mac / Linux:**
-
-```bash
-bash scripts/demo_showcase.sh
-```
-
-**Windows (PowerShell):**
+1. Start all three terminals (see [Section 4](#4-run-locally))
+2. Use the load test to generate traffic through all governance checks:
 
 ```powershell
-.\scripts\demo_showcase.ps1
+.\scripts\load_test.ps1
 ```
-
-Seeds 100 diverse verdicts directly into PostgreSQL:
-
-- 40 PASS verdicts
-- 25 EDIT verdicts (secrets detected and auto-redacted)
-- 20 BLOCK verdicts (unsafe content)
-- 15 ESCALATE verdicts (flagged for human review)
-
-Plus escalation cases and hash-chained audit records.
-
-### Live Demo (Real-Time Traffic)
-
-**Mac / Linux:**
 
 ```bash
-bash scripts/demo_live.sh
+./scripts/load_test.sh
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-.\scripts\demo_live.ps1
-```
-
-Sends 10 requests through the proxy one by one with 2-second delays.
-You watch verdicts appear live on the Live Stream page.
-
-### Full Demo Flow for Hackathon
-
-**Mac / Linux:**
-
-```bash
-# Terminal 1: Start everything
-bash scripts/start_local.sh
-
-# Terminal 2: Seed data + run live demo
-bash scripts/demo_showcase.sh
-bash scripts/demo_live.sh
-```
-
-**Windows (PowerShell):**
-
-```powershell
-# Terminal 1: Start everything
-.\scripts\start_local.ps1
-
-# Terminal 2: Seed data + run live demo
-.\scripts\demo_showcase.ps1
-.\scripts\demo_live.ps1
-```
+1. Open the dashboard and watch verdicts stream in.
 
 **Open browser tabs (all OS):**
 
@@ -710,29 +615,6 @@ curl -s -X POST http://localhost:8200/scan/bias \
 | Gender/racial bias       | `input-bias` (EDIT/ESCALATE)      |
 | Clean educational prompt | `fast-path-summary` (PASS)        |
 | AWS key trigger          | `fast-path-summary` (EDIT)        |
-
-
-### Round 2 Demo Script (Full Showcase)
-
-```powershell
-.\scripts\demo_round2.ps1
-```
-
-Interactive walkthrough demonstrating all Round 2 capabilities:
-
-
-| Step                     | What it shows                                                      |
-| ------------------------ | ------------------------------------------------------------------ |
-| 1. System Overview       | Detection Quality + Feedback Loop metrics on Overview page         |
-| 2. Multiple Apps         | 3 apps with different risk profiles + regulatory presets           |
-| 3. Normal Request        | Clean pass-through with <10ms overhead                             |
-| 4. Secret Detection      | AWS key auto-redacted (EDIT verdict)                               |
-| 5. Prompt Injection      | Shadow-path escalation with full Q&A context                       |
-| 6. Multi-Turn Session    | 3-turn conversation with compounding risk → session escalated      |
-| 7. Tool-Use Detection    | Dangerous action directive → 1.5x confidence multiplier → escalate |
-| 8. Escalation Resolution | Human resolves case → feeds back into detection quality metrics    |
-| 9. Audit Verification    | SHA-256 hash chain integrity check                                 |
-| 10. Detection Metrics    | Trust score, FP/FN rate, feedback effectiveness                    |
 
 
 ---
@@ -839,9 +721,6 @@ Press `?` anywhere in the dashboard to open the shortcuts modal. Quick navigatio
 **All OS (same commands):**
 
 ```bash
-# Preflight check (runs everything)
-bash scripts/preflight.sh
-
 # All Rust tests (276 tests across 32 test binaries)
 cargo test --workspace
 
@@ -994,7 +873,7 @@ services/              Rust workspace (12 crates)
   gateway/             Binary entrypoint
 frontend/              Next.js dashboard (port 3000)
 infra/                 Docker compose + PostgreSQL migrations
-scripts/               start_local, demo_showcase, demo_live, test_guardrails
+scripts/               load_test, test_guardrails
 ```
 
 ---
@@ -1238,7 +1117,7 @@ FP rate = (overrides + dismissals) / total resolved escalations per check. Red h
 | Ollama not responding      | Start it: `ollama serve`                                                      | Start it: `ollama serve`                     |
 | Model not found            | Pull it: `ollama pull qwen2.5:1.5b`                                           | Pull it: `ollama pull qwen2.5:1.5b`          |
 | Port 8900 in use           | `lsof -ti:8900                                                                | xargs kill -9`                               |
-| Live Stream empty          | `bash scripts/demo_showcase.sh`                                               | `.\scripts\demo_showcase.ps1`                |
+| Live Stream empty          | Run load test to generate traffic                                             | `.\scripts\load_test.ps1`                    |
 | Dashboard shows no data    | Check gateway is running and DB is connected                                  | Check gateway is running and DB is connected |
 | Frontend build fails       | `cd frontend && pnpm install`                                                 | `cd frontend; pnpm install`                  |
 | 429 rate limit errors      | Switch to Ollama (local, no limits)                                           | Switch to Ollama (local, no limits)          |
