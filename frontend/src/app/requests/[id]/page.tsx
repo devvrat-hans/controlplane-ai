@@ -99,6 +99,15 @@ export default function RequestDetailPage() {
   }
   const [precedents, setPrecedents] = useState<Precedent[]>([]);
 
+  // Judge status, reported honestly: `off` means no judge call was made, and
+  // `calibrationVersion === null` means the judge's probabilities are raw.
+  interface JudgeStatus {
+    mode: string;
+    calibrationVersion: number | null;
+    fusionEnabled: boolean;
+  }
+  const [judgeStatus, setJudgeStatus] = useState<JudgeStatus | null>(null);
+
   useEffect(() => {
     if (!callId) return;
     fetch(`${API_BASE}/api/v1/requests/${callId}`)
@@ -114,6 +123,20 @@ export default function RequestDetailPage() {
       .then((r) => (r.ok ? r.json() : { precedents: [] }))
       .then((d) => setPrecedents(d.precedents || []))
       .catch((err) => console.error("Failed to load precedents:", err));
+
+    fetch(`${API_BASE}/api/v1/system/config`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg) => {
+        if (!cfg) return;
+        setJudgeStatus({
+          mode: (cfg.decision_judge as string) ?? "off",
+          calibrationVersion: (cfg.calibration_version as number | null) ?? null,
+          fusionEnabled: Boolean(cfg.fusion_enabled),
+        });
+      })
+      .catch(() => {
+        /* the panel simply stays hidden when we cannot report the status honestly */
+      });
   }, [callId]);
 
   const handleResolve = async (resolution: string) => {
@@ -184,6 +207,9 @@ export default function RequestDetailPage() {
             <LifecycleTimeline call={call} verdicts={verdicts} auditRecords={audit_records} escalation={escalation} />
           </CardContent>
         </Card>
+
+        {/* Judge panel — only when the judge actually produced readings for this call */}
+        <JudgePanel verdicts={verdicts} status={judgeStatus} />
 
         {/* Call Overview */}
         <Card>
@@ -746,5 +772,156 @@ function ConfidenceBar({ confidence, isPass }: { confidence: number; isPass?: bo
       </div>
       <span className="font-mono text-[11px] font-medium w-8 text-right">{pct}%</span>
     </div>
+  );
+}
+
+/**
+ * Judge panel — the calibrated decision-model readings for this call, side by side with
+ * the heuristics on the same axis.
+ *
+ * See docs/analysis/laya-integration-plan.md §5.6 / §11.2. Two honesty rules apply here:
+ *
+ *  - The panel renders only when the judge actually produced readings for this call.
+ *    An empty panel is not an empty state to be filled with a "enabled" badge.
+ *  - `-evidence` readings are labelled as evidence: they are sub-threshold probabilities
+ *    that took no action. Presenting them as findings would overstate what happened.
+ */
+const JUDGE_PREFIX = "laya-";
+const EVIDENCE_SUFFIX = "-evidence";
+/** Mirrors the decision engine's JUDGE_DISAGREEMENT_DELTA default. */
+const DISAGREEMENT_DELTA = 0.4;
+
+function JudgePanel({
+  verdicts,
+  status,
+}: {
+  verdicts: VerdictDetail[];
+  status: { mode: string; calibrationVersion: number | null; fusionEnabled: boolean } | null;
+}) {
+  const judge = verdicts.filter((v) => v.check_name.startsWith(JUDGE_PREFIX));
+  if (judge.length === 0) return null;
+
+  const isEvidence = (v: VerdictDetail) => v.check_name.endsWith(EVIDENCE_SUFFIX);
+  const actionable = judge.filter((v) => !isEvidence(v));
+  const evidence = judge.filter(isEvidence);
+  const heuristic = verdicts.filter((v) => !v.check_name.startsWith(JUDGE_PREFIX) && v.outcome !== "pass");
+
+  const axes = Array.from(new Set(judge.map((v) => v.axis))).sort();
+
+  const perAxis = axes.map((axis) => {
+    const judgeP = Math.max(0, ...judge.filter((v) => v.axis === axis).map((v) => v.confidence));
+    const heuristicP = Math.max(0, ...heuristic.filter((v) => v.axis === axis).map((v) => v.confidence));
+    const delta = Math.abs(judgeP - heuristicP);
+    return {
+      axis,
+      judgeP,
+      heuristicP,
+      delta,
+      disagreement: judgeP > 0 && heuristicP > 0 && delta >= DISAGREEMENT_DELTA,
+    };
+  });
+
+  const hasDisagreement = perAxis.some((a) => a.disagreement);
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-sm font-medium">Judge Panel</CardTitle>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-[10px] font-mono">
+            {status?.mode && status.mode !== "off" ? status.mode : "laya"}
+          </Badge>
+          {status && (
+            <Badge variant="outline" className="text-[10px] font-mono">
+              {status.calibrationVersion !== null
+                ? `calibration v${status.calibrationVersion}`
+                : "uncalibrated"}
+            </Badge>
+          )}
+          {hasDisagreement && (
+            <Badge className="text-[10px] bg-[#7928ca]/10 text-[#7928ca] border-[#7928ca]/20">
+              disagreement
+            </Badge>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!status || status.mode === "off" ? (
+          <p className="text-[11px] text-muted-foreground/70">
+            These readings were recorded with <code>DECISION_JUDGE</code> enabled; it is not set on
+            the currently running server.
+          </p>
+        ) : null}
+
+        {status && status.calibrationVersion === null && (
+          <p className="text-[11px] text-muted-foreground/70">
+            No calibration fit exists, so these probabilities are <strong>raw</strong> model
+            confidence — not calibrated ones. The calibrated fusion is therefore off and the
+            deterministic aggregator produced the decision.
+          </p>
+        )}
+
+        {/* Judge vs heuristic, per axis */}
+        <div className="space-y-2">
+          <p className="text-[11px] font-medium text-muted-foreground/70">
+            Judge probability vs the strongest heuristic on the same axis
+          </p>
+          {perAxis.map((row) => (
+            <div key={row.axis} className="flex items-center gap-3 text-xs">
+              <span className="w-28 shrink-0 capitalize">{row.axis}</span>
+              <span className="font-mono tabular-nums w-16 text-right" title="judge p">
+                p={(row.judgeP * 100).toFixed(0)}%
+              </span>
+              <span className="text-muted-foreground/50">vs</span>
+              <span className="font-mono tabular-nums w-16" title="strongest heuristic p">
+                {(row.heuristicP * 100).toFixed(0)}%
+              </span>
+              <span className="text-muted-foreground/50 font-mono w-16">d={row.delta.toFixed(2)}</span>
+              {row.disagreement && (
+                <Badge className="text-[10px] bg-[#7928ca]/10 text-[#7928ca] border-[#7928ca]/20">
+                  routed to review
+                </Badge>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Actionable judge verdicts */}
+        {actionable.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-[11px] font-medium text-muted-foreground/70">
+              Judge findings ({actionable.length})
+            </p>
+            {actionable.map((v) => (
+              <div key={v.id} className="flex items-start gap-2 text-xs">
+                <Badge className={`text-[10px] capitalize shrink-0 ${OUTCOME_STYLES[v.outcome] ?? ""}`}>
+                  {v.outcome}
+                </Badge>
+                <span className="font-mono text-[11px] shrink-0">{v.check_name}</span>
+                <span className="text-muted-foreground/70 line-clamp-2">{v.reason}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Evidence-only readings — explicitly not findings */}
+        {evidence.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-[11px] font-medium text-muted-foreground/70">
+              Evidence only ({evidence.length}) — sub-threshold readings that took no action
+            </p>
+            {evidence.map((v) => (
+              <div key={v.id} className="flex items-start gap-2 text-xs opacity-70">
+                <Badge variant="outline" className="text-[10px] shrink-0 font-mono">
+                  {(v.confidence * 100).toFixed(0)}%
+                </Badge>
+                <span className="font-mono text-[11px] shrink-0">{v.check_name}</span>
+                <span className="text-muted-foreground/70 line-clamp-2">{v.reason}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

@@ -9,13 +9,23 @@ use controlplane_common::types::{Outcome, Path as VerdictPath};
 use controlplane_platform::messaging::{EventPublisher, EventSubscriber};
 
 use crate::bias::BiasClassifier;
+use crate::calibration::CalibrationStore;
+use crate::governance_questions::GovernanceState;
 use crate::groundedness::GroundednessChecker;
 use crate::guardrails_client::GuardrailsClient;
+use crate::laya_client::LayaClient;
 use crate::prompt_injection::PromptInjectionDetector;
 use crate::semantic_pii::SemanticPiiDetector;
 use crate::toggles::ToggleStore;
 use crate::types::{ShadowConfig, ShadowVerdict};
 use crate::verbosity::VerbosityChecker;
+
+/// `check_name` of the stronger, span-producing PII detector (Presidio sidecar).
+pub(crate) const PRESIDIO_PII_CHECK: &str = "presidio-pii";
+/// `check_name` of the judge's contextual re-identification detector.
+pub(crate) const LAYA_PII_CHECK: &str = "laya-semantic-pii";
+/// `check_name` of the keyword heuristic that is being demoted to a fallback.
+pub(crate) const KEYWORD_PII_CHECK: &str = "semantic_pii";
 
 /// Shadow-path worker: subscribes to NATS, runs all async checks in parallel,
 /// publishes verdicts back.
@@ -25,6 +35,8 @@ pub struct ShadowWorker {
     config: ShadowConfig,
     /// Hot-reloadable check toggles from the policy engine (Policies page switches).
     toggles: ToggleStore,
+    /// Fitted detector calibration (temperature scaling). Inert unless a fit exists.
+    calibration: CalibrationStore,
 }
 
 impl ShadowWorker {
@@ -33,12 +45,24 @@ impl ShadowWorker {
         publisher: Arc<dyn EventPublisher>,
         config: ShadowConfig,
     ) -> Self {
-        Self { subscriber, publisher, config, toggles: ToggleStore::default() }
+        Self {
+            subscriber,
+            publisher,
+            config,
+            toggles: ToggleStore::default(),
+            calibration: CalibrationStore::new(),
+        }
     }
 
     /// Attach a shared toggle store so Policies page switches take effect live.
     pub fn with_toggles(mut self, toggles: ToggleStore) -> Self {
         self.toggles = toggles;
+        self
+    }
+
+    /// Attach the shared calibration store so a re-fit takes effect without a restart.
+    pub fn with_calibration(mut self, calibration: CalibrationStore) -> Self {
+        self.calibration = calibration;
         self
     }
 
@@ -62,8 +86,9 @@ impl ShadowWorker {
                             let publisher = self.publisher.clone();
                             let config = self.config.clone();
                             let toggles = self.toggles.clone();
+                            let calibration = self.calibration.clone();
                             tokio::spawn(async move {
-                                process_message(&payload, &publisher, &config, &toggles).await;
+                                process_message(&payload, &publisher, &config, &toggles, &calibration).await;
                             });
                         }
                         None => {
@@ -88,9 +113,12 @@ async fn process_message(
     publisher: &Arc<dyn EventPublisher>,
     config: &ShadowConfig,
     toggles: &ToggleStore,
+    calibration: &CalibrationStore,
 ) {
     // Snapshot the current check toggles (Policies page switches)
     let toggles = toggles.load();
+    // Snapshot the fitted calibration. Inert unless a fit has been written.
+    let calibration = calibration.load();
     let envelope: EventEnvelope<ShadowAnalysisRequest> = match serde_json::from_slice(payload) {
         Ok(env) => env,
         Err(e) => {
@@ -234,6 +262,45 @@ async fn process_message(
         } else { None }
     } else { None };
 
+    // Decision-model judge (Laya / Jev): every governance question in ONE batched call.
+    //
+    // The process-level master switch is `DECISION_JUDGE=laya|jev`; when it is unset (the
+    // default) no HTTP call is made at all and the shadow path behaves exactly as before.
+    // A per-app policy may additionally opt out via `checks.decision_judge_enabled = false`.
+    //
+    // The judge never blocks delivery and never makes the final decision — it only emits
+    // per-check scores that the decision engine aggregates. Any failure yields no
+    // verdicts (absence of a shadow verdict means pass).
+    let laya_handle = if config.decision_judge_enabled && toggles.decision_judge {
+        match config.laya_url.as_ref() {
+            Some(url) => {
+                let client = LayaClient::new(
+                    url,
+                    config.laya_timeout_ms,
+                    config.laya_model.clone(),
+                    config.laya_api_key.clone(),
+                )
+                // Fitted temperatures, so the thresholds downstream are statistically
+                // meaningful rather than raw over-confident scores. Inert by default.
+                .with_calibration((*calibration).clone());
+                let response = response_text.clone();
+                let prompt = prompt_text.clone();
+                let context = context_text.clone();
+
+                Some(tokio::spawn(async move {
+                    let state = GovernanceState::new(&response, &prompt, context.as_deref());
+                    client.evaluate(&state).await
+                }))
+            }
+            None => {
+                warn!("Decision judge enabled but LAYA_URL is not set — skipping the judge");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Collect all results
     let mut verdicts: Vec<ShadowVerdict> = Vec::new();
 
@@ -317,6 +384,23 @@ async fn process_message(
         }
     }
 
+    // Decision-model judge verdicts. A failed or timed-out task contributes nothing.
+    if let Some(handle) = laya_handle {
+        match handle.await {
+            Ok(laya_verdicts) => verdicts.extend(laya_verdicts),
+            Err(e) => warn!(error = %e, "Laya judge task failed — FAIL OPEN"),
+        }
+    }
+
+    // Demote the keyword PII heuristic to a genuine fallback (plan §4.3).
+    if let Some(dropped) = demote_semantic_pii(&mut verdicts) {
+        debug!(
+            correlation_id = %correlation_id,
+            dropped,
+            "Superseded keyword PII heuristic by a stronger PII detector"
+        );
+    }
+
     // Publish each verdict
     for shadow_verdict in &verdicts {
         let verdict = Verdict::new(
@@ -359,6 +443,112 @@ async fn process_message(
         worst_outcome = %worst_outcome,
         "Shadow analysis complete"
     );
+}
+
+/// Demote the `semantic_pii` keyword heuristic to a fallback.
+///
+/// Plan §4.3: the heuristic is *strictly dominated* on this job. Presidio finds the
+/// actual entities and returns character offsets that can be redacted; the judge reasons
+/// about inference-based re-identification that Presidio structurally cannot see. Running
+/// the keyword list *alongside* them adds a third, correlated signal that over-fires on
+/// the word "email" — the classic way an ensemble inflates confidence without adding
+/// information.
+///
+/// So: when a stronger PII detector actually reported on this response, the keyword
+/// verdict is dropped. When neither did — the sidecar is down, or the judge is off — the
+/// heuristic survives as the fail-open fallback it was always meant to be.
+///
+/// Returns `Some(dropped_count)` when the heuristic was superseded, `None` otherwise.
+pub(crate) fn demote_semantic_pii(verdicts: &mut Vec<ShadowVerdict>) -> Option<usize> {
+    let stronger_pii_reported = verdicts.iter().any(|v| {
+        v.check_name == PRESIDIO_PII_CHECK
+            || (v.check_name == LAYA_PII_CHECK && v.outcome != Outcome::Pass)
+    });
+
+    if !stronger_pii_reported {
+        return None;
+    }
+
+    let before = verdicts.len();
+    verdicts.retain(|v| v.check_name != KEYWORD_PII_CHECK);
+    let dropped = before - verdicts.len();
+
+    if dropped == 0 {
+        None
+    } else {
+        Some(dropped)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use controlplane_common::types::Axis;
+
+    fn verdict(check_name: &str, outcome: Outcome) -> ShadowVerdict {
+        ShadowVerdict {
+            axis: Axis::Responsibility,
+            check_name: check_name.to_string(),
+            outcome,
+            confidence: 0.8,
+            reason: "test".to_string(),
+            duration_ms: 1,
+        }
+    }
+
+    #[test]
+    fn keyword_pii_is_dropped_when_presidio_reported() {
+        let mut verdicts = vec![
+            verdict(PRESIDIO_PII_CHECK, Outcome::Edit),
+            verdict(KEYWORD_PII_CHECK, Outcome::Escalate),
+        ];
+
+        assert_eq!(demote_semantic_pii(&mut verdicts), Some(1));
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].check_name, PRESIDIO_PII_CHECK);
+    }
+
+    #[test]
+    fn keyword_pii_is_dropped_when_the_judge_reported() {
+        let mut verdicts = vec![
+            verdict(LAYA_PII_CHECK, Outcome::Escalate),
+            verdict(KEYWORD_PII_CHECK, Outcome::Escalate),
+        ];
+
+        assert_eq!(demote_semantic_pii(&mut verdicts), Some(1));
+    }
+
+    #[test]
+    fn keyword_pii_survives_when_the_sidecar_is_down() {
+        // This is the whole point of keeping the heuristic: it is the fallback when
+        // neither the sidecar nor the judge produced anything.
+        let mut verdicts = vec![
+            verdict(KEYWORD_PII_CHECK, Outcome::Escalate),
+            verdict("prompt_injection", Outcome::Escalate),
+        ];
+
+        assert_eq!(demote_semantic_pii(&mut verdicts), None);
+        assert_eq!(verdicts.len(), 2);
+    }
+
+    #[test]
+    fn a_pre_judge_laya_evidence_verdict_does_not_supersede_the_heuristic() {
+        let mut verdicts = vec![
+            verdict(&format!("{LAYA_PII_CHECK}-evidence"), Outcome::Pass),
+            verdict(KEYWORD_PII_CHECK, Outcome::Escalate),
+        ];
+
+        assert_eq!(demote_semantic_pii(&mut verdicts), None);
+        assert_eq!(verdicts.len(), 2);
+    }
+
+    #[test]
+    fn demotion_is_a_no_op_without_a_keyword_verdict() {
+        let mut verdicts = vec![verdict(PRESIDIO_PII_CHECK, Outcome::Edit)];
+
+        assert_eq!(demote_semantic_pii(&mut verdicts), None);
+        assert_eq!(verdicts.len(), 1);
+    }
 }
 
 

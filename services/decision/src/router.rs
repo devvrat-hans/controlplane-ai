@@ -6,7 +6,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use controlplane_common::events::{subjects, DecisionPayload, EventEnvelope, VerdictPayload};
@@ -14,7 +14,7 @@ use controlplane_common::models::{Decision, Verdict};
 use controlplane_common::types::{AppId, Outcome};
 use controlplane_platform::messaging::{EventPublisher, EventSubscriber};
 
-use crate::aggregator::VerdictAggregator;
+use crate::aggregator::{AxisFusion, FusionConfig, FusionResult, VerdictAggregator};
 use crate::policy::PolicyEngine;
 
 pub struct DecisionServiceState {
@@ -61,6 +61,68 @@ struct AggregateResponse {
     /// Precedent IDs from the reviewer-override learning store that were
     /// consulted for this decision (auditable explainability).
     consulted_precedents: Vec<Uuid>,
+    /// Calibrated-fusion detail. `applied: false` means no calibration fit exists yet
+    /// and the pre-existing aggregator produced the outcome.
+    fusion: FusionSummary,
+}
+
+/// Explainability for the calibration-aware path (plan §5.5 / §5.6).
+#[derive(Serialize, Default)]
+struct FusionSummary {
+    applied: bool,
+    calibration_version: Option<i32>,
+    /// True when the judge and the heuristics materially disagreed on some axis and the
+    /// case was routed to a human for that reason.
+    disagreement: bool,
+    disagreement_reason: Option<String>,
+    axes: Vec<AxisSummary>,
+}
+
+#[derive(Serialize)]
+struct AxisSummary {
+    axis: String,
+    /// Fused probability for this axis (weighted noisy-OR).
+    p: f32,
+    outcome: String,
+    detectors: Vec<DetectorSummary>,
+}
+
+#[derive(Serialize)]
+struct DetectorSummary {
+    check_name: String,
+    p: f32,
+    /// `None` when the detector is outside the fit and was passed through unchanged.
+    weight: Option<f32>,
+    calibrated: bool,
+}
+
+impl From<&FusionResult> for FusionSummary {
+    fn from(fused: &FusionResult) -> Self {
+        Self {
+            applied: true,
+            calibration_version: fused.calibration_version,
+            disagreement: fused.disagreement,
+            disagreement_reason: fused.disagreement_reason.clone(),
+            axes: fused
+                .axes
+                .iter()
+                .map(|AxisFusion { axis, p, outcome, detectors }| AxisSummary {
+                    axis: axis.as_str().to_string(),
+                    p: *p,
+                    outcome: outcome.as_str().to_string(),
+                    detectors: detectors
+                        .iter()
+                        .map(|d| DetectorSummary {
+                            check_name: d.check_name.clone(),
+                            p: d.p,
+                            weight: d.weight,
+                            calibrated: d.calibrated,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 async fn aggregate_verdicts(
@@ -93,8 +155,31 @@ async fn aggregate_verdicts(
     // Load policy for this app
     let policy = state.policy_engine.load_policy(request.app_id).await;
 
-    // Aggregate verdicts
-    let mut result = state.aggregator.aggregate_with_reasoning(&verdicts);
+    // Aggregate verdicts.
+    //
+    // The calibrated fusion only engages when a fit exists in `detector_calibration`;
+    // otherwise `fuse_evidence` returns `None` and the pre-existing aggregator runs,
+    // so an un-fitted deployment keeps its exact previous behaviour (plan §7).
+    let fusion_config = load_fusion_config(&state.pool).await;
+    let fused = state.aggregator.fuse_evidence(&verdicts, &fusion_config);
+    let fusion_summary = fused
+        .as_ref()
+        .map(FusionSummary::from)
+        .unwrap_or_default();
+
+    if fusion_summary.applied {
+        info!(
+            call_id = %request.call_id,
+            calibration_version = ?fusion_summary.calibration_version,
+            disagreement = fusion_summary.disagreement,
+            "Calibrated fusion applied"
+        );
+    }
+
+    let mut result = match fused {
+        Some(fused) => fused.aggregation,
+        None => state.aggregator.aggregate_with_reasoning(&verdicts),
+    };
 
     // --- Feedback RAG: retrieve similar past reviewer decisions and suppress/annotate ---
     let mut consulted_precedents: Vec<Uuid> = Vec::new();
@@ -183,7 +268,66 @@ async fn aggregate_verdicts(
         contributing_verdict_count: result.contributing_ids.len(),
         applied_policy_version: Some(policy.version),
         consulted_precedents,
+        fusion: fusion_summary,
     }))
+}
+
+/// Load the fitted fusion parameters from `detector_calibration`.
+///
+/// Only rows with `calibrated = TRUE` are used, so the table's documented seed defaults
+/// (which ship `calibrated = FALSE`) leave the fusion switched off. Any database error
+/// also leaves it off — the decision service must never fail because its calibration
+/// could not be read; it simply falls back to the deterministic aggregator.
+///
+/// Thresholds come from the same store as the weights so a policy can tighten them
+/// without a redeploy; the `JUDGE_*` environment variables provide the process default.
+async fn load_fusion_config(pool: &PgPool) -> FusionConfig {
+    let mut config = FusionConfig {
+        escalate_threshold: env_f64("JUDGE_ESCALATE_THRESHOLD", FusionConfig::default().escalate_threshold),
+        edit_threshold: env_f64("JUDGE_EDIT_THRESHOLD", FusionConfig::default().edit_threshold),
+        evidence_threshold: env_f64("JUDGE_EVIDENCE_THRESHOLD", FusionConfig::default().evidence_threshold),
+        disagreement_delta: env_f64("JUDGE_DISAGREEMENT_DELTA", FusionConfig::default().disagreement_delta),
+        ..FusionConfig::default()
+    };
+
+    let rows: Result<Vec<(String, f64, i32)>, sqlx::Error> = sqlx::query_as(
+        r#"
+        SELECT DISTINCT ON (detector, primitive, option_count)
+               detector, weight, version
+        FROM detector_calibration
+        WHERE calibrated = TRUE
+        ORDER BY detector, primitive, option_count, version DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await;
+
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            debug!(error = %e, "Could not load detector calibration — using the deterministic aggregator");
+            return FusionConfig::default();
+        }
+    };
+
+    for (detector, weight, version) in rows {
+        config.weights.insert(detector, weight.clamp(0.0, 1.0));
+        config.calibration_version = Some(match config.calibration_version {
+            Some(current) => current.max(version),
+            None => version,
+        });
+    }
+
+    config
+}
+
+/// Parse a positive `f64` from the environment, falling back to the built-in default.
+fn env_f64(key: &str, default: f64) -> f64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(default)
 }
 
 /// Fetch a text representation of this call's response payload for similarity

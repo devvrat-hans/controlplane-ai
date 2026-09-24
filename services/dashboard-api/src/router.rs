@@ -99,6 +99,8 @@ pub fn dashboard_router(state: DashboardState) -> Router {
         // Detection quality & feedback metrics (Round 2)
         .route("/api/v1/metrics/detection-quality", get(detection_quality))
         .route("/api/v1/metrics/feedback-effectiveness", get(feedback_effectiveness))
+        // Judge/heuristic agreement (Laya integration plan §5.6 / §11.2)
+        .route("/api/v1/metrics/judge-agreement", get(judge_agreement))
         // Reviewer precedent retrieval (RAG feedback loop)
         .route("/api/v1/feedback/precedents", get(feedback_precedents))
         // Session conversation thread (Round 2 — multi-turn context)
@@ -705,6 +707,179 @@ async fn ready(
     })))
 }
 
+// === Judge / heuristic agreement ===
+
+#[derive(Deserialize)]
+struct JudgeAgreementParams {
+    /// Look-back window in days.
+    days: Option<i32>,
+    /// Probability gap at or above which the judge and the heuristics are considered to
+    /// disagree. Defaults to the decision engine's `JUDGE_DISAGREEMENT_DELTA` (0.40).
+    threshold: Option<f64>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct AxisAgreement {
+    axis: String,
+    comparable: i64,
+    disagreements: i64,
+    agreement_rate: f64,
+    judge_flagged: i64,
+    heuristic_flagged: i64,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct CheckAgreement {
+    check_name: String,
+    flagged: i64,
+    avg_confidence: f64,
+}
+
+#[derive(Serialize)]
+struct JudgeAgreementMetrics {
+    days: i32,
+    threshold: f64,
+    /// `(call, axis)` pairs where BOTH a judge verdict and a heuristic verdict fired.
+    /// Agreement is only measurable on these pairs.
+    comparable_pairs: i64,
+    agreements: i64,
+    disagreements: i64,
+    /// `agreements / comparable_pairs`; 1.0 when there is nothing to compare yet.
+    agreement_rate: f64,
+    /// Pairs where only one side fired — these are coverage differences, not conflicts.
+    judge_only: i64,
+    heuristic_only: i64,
+    axes: Vec<AxisAgreement>,
+    /// Judge verdict counts by detector, including evidence-only readings.
+    judge_checks: Vec<CheckAgreement>,
+    /// Version of the calibration fit behind the fusion, if any.
+    calibration_version: Option<i32>,
+    /// True when judge probabilities are UNCALIBRATED (no fit exists). Reported so the
+    /// dashboard never presents raw model scores as calibrated ones.
+    raw_probabilities: bool,
+}
+
+/// Judge ⇄ heuristic agreement on the same axis (plan §5.6).
+///
+/// The disagreement rate is a first-class metric: every disagreement is a case routed to a
+/// human, and every resolution becomes another labelled precedent for the weight fit.
+///
+/// Read the caveat honestly: with no calibration fit the judge's probabilities are raw,
+/// so a disagreement here may be a scale difference rather than a genuine conflict.
+/// `raw_probabilities` says which world we are in.
+async fn judge_agreement(
+    State(state): State<Arc<DashboardState>>,
+    Query(params): Query<JudgeAgreementParams>,
+) -> Result<Json<JudgeAgreementMetrics>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    let days = params.days.unwrap_or(30).clamp(1, 365);
+    let threshold = params
+        .threshold
+        .or_else(|| std::env::var("JUDGE_DISAGREEMENT_DELTA").ok().and_then(|v| v.parse().ok()))
+        .unwrap_or(0.40)
+        .clamp(0.0, 1.0);
+
+    // Per (call, axis): the strongest judge reading vs the strongest heuristic reading.
+    // `pass` outcomes are excluded — an evidence-only reading is not a finding, and
+    // comparing a finding against a non-finding would manufacture disagreements.
+    let axes: Vec<AxisAgreement> = sqlx::query_as(
+        r#"
+        WITH per_call AS (
+            SELECT
+                call_id,
+                axis,
+                MAX(confidence) FILTER (
+                    WHERE check_name LIKE 'laya-%' AND outcome <> 'pass'
+                ) AS judge_p,
+                MAX(confidence) FILTER (
+                    WHERE check_name NOT LIKE 'laya-%' AND outcome <> 'pass'
+                ) AS heuristic_p
+            FROM verdicts
+            WHERE created_at > NOW() - ($1::int * INTERVAL '1 day')
+            GROUP BY call_id, axis
+        )
+        SELECT
+            axis,
+            COUNT(*) FILTER (WHERE judge_p IS NOT NULL AND heuristic_p IS NOT NULL) AS comparable,
+            COUNT(*) FILTER (
+                WHERE judge_p IS NOT NULL AND heuristic_p IS NOT NULL
+                  AND ABS(judge_p - heuristic_p) >= $2
+            ) AS disagreements,
+            CASE
+                WHEN COUNT(*) FILTER (WHERE judge_p IS NOT NULL AND heuristic_p IS NOT NULL) > 0
+                THEN (
+                    COUNT(*) FILTER (
+                        WHERE judge_p IS NOT NULL AND heuristic_p IS NOT NULL
+                          AND ABS(judge_p - heuristic_p) < $2
+                    )
+                )::float /
+                (
+                    COUNT(*) FILTER (WHERE judge_p IS NOT NULL AND heuristic_p IS NOT NULL)
+                )::float
+                ELSE 1.0
+            END AS agreement_rate,
+            COUNT(*) FILTER (WHERE judge_p IS NOT NULL AND heuristic_p IS NULL) AS judge_flagged,
+            COUNT(*) FILTER (WHERE judge_p IS NULL AND heuristic_p IS NOT NULL) AS heuristic_flagged
+        FROM per_call
+        GROUP BY axis
+        ORDER BY axis
+        "#,
+    )
+    .bind(days)
+    .bind(threshold)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let judge_checks: Vec<CheckAgreement> = sqlx::query_as(
+        r#"
+        SELECT
+            check_name,
+            COUNT(*)::bigint AS flagged,
+            COALESCE(AVG(confidence)::float8, 0.0) AS avg_confidence
+        FROM verdicts
+        WHERE check_name LIKE 'laya-%'
+          AND created_at > NOW() - ($1::int * INTERVAL '1 day')
+        GROUP BY check_name
+        ORDER BY flagged DESC, check_name
+        "#,
+    )
+    .bind(days)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let comparable_pairs: i64 = axes.iter().map(|a| a.comparable).sum();
+    let disagreements: i64 = axes.iter().map(|a| a.disagreements).sum();
+    let judge_flagged: i64 = axes.iter().map(|a| a.judge_flagged).sum();
+    let heuristic_flagged: i64 = axes.iter().map(|a| a.heuristic_flagged).sum();
+    let agreements = comparable_pairs - disagreements;
+    let agreement_rate = if comparable_pairs > 0 {
+        agreements as f64 / comparable_pairs as f64
+    } else {
+        1.0
+    };
+
+    let (calibration_version, calibrated_detectors) = calibration_state(Some(pool)).await;
+
+    Ok(Json(JudgeAgreementMetrics {
+        days,
+        threshold,
+        comparable_pairs,
+        agreements,
+        disagreements,
+        agreement_rate,
+        judge_only: judge_flagged,
+        heuristic_only: heuristic_flagged,
+        axes,
+        judge_checks,
+        calibration_version,
+        raw_probabilities: calibrated_detectors == 0,
+    }))
+}
+
 // === Policy Handlers ===
 
 #[derive(Deserialize)]
@@ -727,6 +902,10 @@ struct PolicyUpdate {
     groundedness_enabled: Option<bool>,
     verbosity_enabled: Option<bool>,
     semantic_pii_enabled: Option<bool>,
+    // Decision-model judge (Laya / Jev). The process-level master switch is the
+    // DECISION_JUDGE env var; this per-app flag can only opt an app OUT. Omitted means
+    // "keep it on", so a policy save never silently disables the judge.
+    decision_judge_enabled: Option<bool>,
 }
 
 async fn get_policy(
@@ -782,13 +961,15 @@ async fn get_policy(
 ///
 /// - performance row: { groundedness_threshold, hallucination_action,
 ///   block_threshold, escalate_threshold,
-///   checks: { groundedness_enabled, hallucination_detection_enabled, verbosity_enabled } }
+///   checks: { groundedness_enabled, hallucination_detection_enabled, verbosity_enabled,
+///   decision_judge_enabled } }
 /// - cost row: { max_tokens_per_request, retry_max, daily_budget_cents }
 /// - responsibility: { bias_threshold, pii_action, unsafe_action, unsafe_keywords,
 ///   block_threshold, escalate_threshold,
 ///   checks: { unsafe_content_enabled, secret_detection_enabled,
 ///   prompt_injection_enabled, semantic_pii_enabled,
-///   pii_detection, toxicity_detection, bias_detection } }
+///   pii_detection, toxicity_detection, bias_detection,
+///   decision_judge_enabled } }
 ///
 /// Consumers:
 /// - fast-path reloader (`policy_reload.rs`) reads max_tokens_per_request / retry_max /
@@ -812,6 +993,7 @@ async fn update_policy(
     let retry_max = body.retry_max_count.unwrap_or(3);
     let unsafe_content_on = body.unsafe_content_enabled.unwrap_or(true);
     let secret_on = body.secret_detection_enabled.unwrap_or(true);
+    let decision_judge_on = body.decision_judge_enabled.unwrap_or(true);
 
     let performance_config = serde_json::json!({
         "groundedness_threshold": escalate,
@@ -822,6 +1004,9 @@ async fn update_policy(
             "groundedness_enabled": body.groundedness_enabled.unwrap_or(true),
             "hallucination_detection_enabled": body.hallucination_detection_enabled.unwrap_or(true),
             "verbosity_enabled": body.verbosity_enabled.unwrap_or(true),
+            // Written to both axes with the same value: the toggle store merges every
+            // active policy row, and get_policy returns the first `checks` object it sees.
+            "decision_judge_enabled": decision_judge_on,
         },
     });
 
@@ -845,6 +1030,7 @@ async fn update_policy(
             "pii_detection": body.pii_detection.unwrap_or(true),
             "toxicity_detection": body.toxicity_detection.unwrap_or(true),
             "bias_detection": body.bias_detection.unwrap_or(true),
+            "decision_judge_enabled": decision_judge_on,
         },
     });
 
@@ -933,6 +1119,19 @@ struct SystemConfig {
     database_connected: bool,
     database_engine: String,
     database_name: String,
+    /// Decision-model judge status, reported honestly (plan §10):
+    /// `off` | `laya` | `jev`. `off` means no judge call is ever made.
+    decision_judge: String,
+    /// Whether a judge endpoint is configured for the active mode.
+    decision_judge_configured: bool,
+    decision_judge_url: Option<String>,
+    decision_judge_timeout_ms: u64,
+    /// Version of the calibration fit behind the fusion, or `null` when no fit exists —
+    /// in which case the decision engine uses its pre-fusion aggregator.
+    calibration_version: Option<i32>,
+    /// Number of detectors with a fitted weight. `0` means fusion is off.
+    calibrated_detectors: i64,
+    fusion_enabled: bool,
 }
 
 async fn get_system_config(
@@ -950,6 +1149,9 @@ async fn get_system_config(
             .await.unwrap_or_default()
     } else { String::new() };
 
+    let (judge_mode, judge_url) = judge_configuration();
+    let (calibration_version, calibrated_detectors) = calibration_state(state.pool.as_ref()).await;
+
     Json(SystemConfig {
         api_port: std::env::var("DASHBOARD_API_PORT")
             .unwrap_or_else(|_| "8080".into()).parse().unwrap_or(8080),
@@ -966,7 +1168,59 @@ async fn get_system_config(
         database_connected: db_connected,
         database_engine: db_version,
         database_name: db_name,
+        decision_judge: judge_mode.clone(),
+        decision_judge_configured: match judge_mode.as_str() {
+            "laya" | "jev" => judge_url.is_some(),
+            _ => false,
+        },
+        decision_judge_url: judge_url,
+        decision_judge_timeout_ms: std::env::var("LAYA_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(5000),
+        calibration_version,
+        calibrated_detectors,
+        fusion_enabled: calibrated_detectors > 0,
     })
+}
+
+/// Read the decision-model judge configuration from the environment.
+fn judge_configuration() -> (String, Option<String>) {
+    let mode = std::env::var("DECISION_JUDGE")
+        .unwrap_or_else(|_| "off".to_string())
+        .trim()
+        .to_lowercase();
+
+    if !matches!(mode.as_str(), "laya" | "jev") {
+        return ("off".to_string(), None);
+    }
+
+    let url = std::env::var("LAYA_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty());
+
+    (mode, url)
+}
+
+/// Fitted calibration state: latest version and how many detectors it covers.
+async fn calibration_state(pool: Option<&PgPool>) -> (Option<i32>, i64) {
+    let Some(pool) = pool else { return (None, 0) };
+
+    let row: Result<(Option<i32>, i64), sqlx::Error> = sqlx::query_as(
+        "SELECT MAX(version), COUNT(DISTINCT detector) \
+         FROM detector_calibration WHERE calibrated = TRUE",
+    )
+    .fetch_one(pool)
+    .await;
+
+    match row {
+        Ok((version, detectors)) => (version, detectors),
+        Err(e) => {
+            // The table may not exist yet on an older database — report "no fit".
+            tracing::debug!(error = %e, "Could not read detector calibration state");
+            (None, 0)
+        }
+    }
 }
 
 // === API Key Handlers ===

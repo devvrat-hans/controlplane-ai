@@ -1,3 +1,10 @@
+# The install step uses a BuildKit cache mount (--store-dir /pnpm/store), so the
+# state pnpm records in node_modules never matches the default store the
+# pre-run check inspects. That mismatch made `pnpm build` try to purge and
+# reinstall node_modules — which aborts with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY
+# in a Docker build. Deps were installed in the previous layer; skip the check.
+verifyDepsBeforeRun: false
+
 allowBuilds:
   sharp: false
   unrs-resolver: false
