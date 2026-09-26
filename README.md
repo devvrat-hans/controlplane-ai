@@ -58,7 +58,7 @@ verbosity analysis, semantic PII re-identification.
 unmodified. A governance layer that becomes a single point of failure is worse
 than no governance at all.
 
-### 13 Governance Checks
+### 14 Governance Checks
 
 
 | Check                      | Path       | Engine                                  | Latency |
@@ -68,6 +68,7 @@ than no governance at all.
 | Cost Cap (Tiered)          | Fast-Path  | Per-app caps: block/escalate/edit tiers | <1ms    |
 | Retry/Loop Detection       | Fast-Path  | In-memory sliding window                | <1ms    |
 | Session Risk Accumulator   | Fast-Path  | Multi-turn compounding risk             | <1ms    |
+| Tool-Use Detection         | Fast-Path  | function_call/tool_use + 1.5x multiplier| <1ms    |
 | Prompt Injection Detection | Shadow     | 3-layer: pattern, structural, encoding  | <2s     |
 | Hallucination Detection    | Shadow     | DeepEval LLM-as-a-judge                 | <2s     |
 | Groundedness Scoring       | Shadow     | NLI model                               | <2s     |
@@ -78,7 +79,7 @@ than no governance at all.
 | Bias Detection             | Guardrails | LLM Guard                               | <2s     |
 
 
-All checks can be toggled on/off per application from the Policies page. Cost caps are configured independently per app (min 10 tokens, step 10) with three enforcement tiers:
+The 10 model-based checks can be toggled on/off per application from the Policies page (the fast path's cost cap, retry and session-risk thresholds are configured numerically rather than toggled). Cost caps are configured independently per app (min 10 tokens, step 10) with three enforcement tiers:
 
 
 | Token Usage vs Cap | Outcome      | Description                                |
@@ -343,11 +344,11 @@ Pass `profile_id` (0-5) in the request body to override the default cost cap and
 | profile_id | Profile Name          | Geography | Cost Cap    | Risk Level   |
 | ---------- | --------------------- | --------- | ----------- | ------------ |
 | 0          | US Financial Services | US        | 3000 tokens | Conservative |
-| 1          | EU Financial Services | EU        | 1000 tokens | Conservative |
-| 2          | US Healthcare         | US        | 4000 tokens | Conservative |
+| 1          | EU Financial Services | EU        | 2000 tokens | Conservative |
+| 2          | US Healthcare         | US        | 3000 tokens | Conservative |
 | 3          | India General         | India     | 4000 tokens | Moderate     |
-| 4          | EU General Enterprise | EU        | 2000 tokens | Moderate     |
-| 5          | Global Internal Tools | Global    | 980 tokens  | Permissive   |
+| 4          | EU General Enterprise | EU        | 4000 tokens | Moderate     |
+| 5          | Global Internal Tools | Global    | 8000 tokens | Permissive   |
 
 
 If `profile_id` is omitted, the app's own configured cap applies (Agent-Internal default: 30 tokens).
@@ -360,7 +361,7 @@ Invoke-RestMethod http://localhost:8900/v1/messages -Method Post `
   -Body '{"model":"qwen2.5:1.5b","app_id":"10000000-0000-0000-0000-000000000002","profile_id":2,"messages":[{"role":"user","content":"Explain HIPAA compliance"}],"max_tokens":500}'
 ```
 
-This uses the US Healthcare profile's 4000-token cap instead of App1's default 30-token cap.
+This uses the US Healthcare profile's 3000-token cap instead of App1's default 30-token cap.
 
 **Session tracking** links turns in a conversation. If 3+ risk events accumulate in the same session, the system escalates the entire conversation for human review.
 
@@ -543,7 +544,7 @@ source ~/.zshrc
 3. **Requests** — Full request list with clickable rows, severity-ordered outcomes, page size selector (25–500), compare panel
 4. **Request Detail** — Full Q&A payload, all 14 policy checks with confidence bars and latency, audit trail
 5. **Analytics** — Verdict trends over time, per-policy effectiveness table, axis breakdown, model distribution
-6. **Policies** — Toggle 14 governance checks, adjust thresholds per app independently, per-app cost caps (min 10 tokens, step 10), regulatory profiles for Agent-Internal only, policy effectiveness stats
+6. **Policies** — Toggle 10 governance checks, adjust thresholds per app independently, per-app cost caps (min 10 tokens, step 10), regulatory profiles for Agent-Internal only, policy effectiveness stats
 7. **Escalations** — Priority-sorted queue with pagination (25/50/100/200 per page), conversation thread for reviewers, resolve with confirm/override/dismiss
 8. **Cost** — Per-model token costs, hourly timeseries (local timezone), anomaly detection
 9. **Audit** — Tamper-evident SHA-256 hash chain of every decision, export, integrity verification
@@ -721,33 +722,38 @@ Press `?` anywhere in the dashboard to open the shortcuts modal. Quick navigatio
 **All OS (same commands):**
 
 ```bash
-# All Rust tests (276 tests across 32 test binaries)
+# All Rust tests (376 tests across 32 test binaries)
 cargo test --workspace
 
-# All frontend tests (114 tests across 10 files)
+# All frontend tests (116 tests across 10 files)
 cd frontend && npx vitest run
 
 # Fast-path benchmarks
 cargo bench -p controlplane-fast-path
+
+# Hybrid-judge accuracy ablation (needs a populated database)
+./scripts/eval_accuracy.sh
 ```
 
 **Test Results:**
 
-- Rust: 276 tests, 0 failures (unit + integration + DB)
-- Frontend: 114 tests, 0 failures (unit + integration)
+- Rust: 376 tests, 0 failures (unit + integration + DB)
+- Frontend: 115 of 116 pass. The one failure
+  (`components/header.test.tsx` → "renders app selector with options", expects 4 options
+  but gets 1) is **pre-existing**: it fails on `main` too, with no header code touched.
 - DB integration: 4 reviewer-override RAG tests
 
-### Policies Page Toggle Tests (39 tests)
+### Policies Page Toggle Tests (41 tests)
 
 
 | Category            | Tests | Coverage                                                       |
 | ------------------- | ----- | -------------------------------------------------------------- |
-| Rendering           | 6     | All 10 toggles, labels, aria-labels, provider badges           |
+| Rendering           | 7     | All 11 toggles, labels, aria-labels, provider badges           |
 | Default state       | 3     | All enabled, all disabled, mixed policy                        |
 | Click behavior      | 6     | Enable/disable, double-click, single toggle isolation, all-off |
-| Count badge         | 5     | 10/10, 0/10, decrement, increment on re-enable                 |
+| Count badge         | 5     | 11/11, 0/11, decrement, increment on re-enable                 |
 | Viewer restrictions | 4     | Disabled switches, click ignored, count unchanged              |
-| Save payload        | 3     | PUT includes correct states, targets correct app               |
+| Save payload        | 4     | PUT includes all 11 states incl. judge opt-out, correct app    |
 | App switching       | 1     | Switching apps loads different states                          |
 | API fallback        | 5     | Empty/null/partial config, fetch failure, 404                  |
 | Visual state        | 6     | Emerald bg/border for enabled, neutral for disabled            |
@@ -849,7 +855,8 @@ The architecture is designed so that the proxy never blocks on downstream servic
 | `cost-accounting` | Token tracking + anomaly detection                          | Implemented |
 | `escalation`      | Human review queue                                          | Implemented |
 | `dashboard-api`   | BFF: REST + SSE for frontend                                | Implemented |
-| `guardrails`      | Python sidecar: Presidio, LLM Guard, DeepEval               | Implemented |
+| `notification`    | Alert delivery: Slack/webhook on block/escalate             | Implemented |
+| `guardrails`      | Python sidecar: Presidio, LLM Guard, DeepEval (not a Rust crate) | Implemented |
 | `gateway`         | Binary entrypoint (starts everything)                       | Implemented |
 
 
@@ -858,7 +865,7 @@ The architecture is designed so that the proxy never blocks on downstream servic
 ## 13. Repository Structure
 
 ```text
-services/              Rust workspace (12 crates)
+services/              Rust workspace (12 crates) + Python guardrails sidecar
   common/              Domain models, provider abstractions
   platform/            Config, database pool, event bus
   proxy/               Reverse proxy (port 8900)
@@ -869,8 +876,9 @@ services/              Rust workspace (12 crates)
   cost-accounting/     Token tracking
   escalation/          Human review queue
   dashboard-api/       REST + SSE backend (port 8080)
-  guardrails/          Python sidecar (Presidio + LLM Guard)
+  notification/        Slack/webhook alert delivery
   gateway/             Binary entrypoint
+  guardrails/          Python sidecar (Presidio + LLM Guard)
 frontend/              Next.js dashboard (port 3000)
 infra/                 Docker compose + PostgreSQL migrations
 scripts/               load_test, test_guardrails

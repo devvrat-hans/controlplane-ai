@@ -16,7 +16,10 @@ use controlplane_proxy::handler::ProxyState;
 use controlplane_common::create_provider;
 
 use controlplane_dashboard_api::{dashboard_router, spawn_sse_bridge, DashboardState, InMemoryVerdictStore, SseBroadcaster};
-use controlplane_shadow_analysis::{ShadowConfig, ShadowWorker, ToggleStore, spawn_toggle_reloader};
+use controlplane_shadow_analysis::{
+    spawn_calibration_reloader, spawn_toggle_reloader, CalibrationStore, ShadowConfig,
+    ShadowWorker, ToggleStore,
+};
 use controlplane_decision::{spawn_verdict_collector, DecisionServiceState, VerdictAggregator, PolicyEngine};
 use controlplane_cost_accounting::spawn_cost_tracker;
 use controlplane_escalation::spawn_escalation_listener;
@@ -168,6 +171,8 @@ async fn main() -> Result<()> {
     // ─── Shadow analysis worker ──────────────────────────────────────
     // Shared toggle store: Policies page enable/disable switches hot-reload
     let toggle_store = ToggleStore::default();
+    // Shared calibration store: fitted judge temperatures, inert until a fit exists.
+    let calibration_store = CalibrationStore::new();
     let shadow_config = ShadowConfig {
         provider: config.upstream_provider,
         ..ShadowConfig::default()
@@ -177,12 +182,17 @@ async fn main() -> Result<()> {
         publisher.clone(),
         shadow_config,
     )
-    .with_toggles(toggle_store.clone());
+    .with_toggles(toggle_store.clone())
+    .with_calibration(calibration_store.clone());
     let shadow_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
         shadow_worker.run(shadow_shutdown).await;
     });
-    info!("Shadow analysis worker started");
+    info!(
+        judge = %std::env::var("DECISION_JUDGE").unwrap_or_else(|_| "off".to_string()),
+        laya_url = %std::env::var("LAYA_URL").unwrap_or_else(|_| "(unset)".to_string()),
+        "Shadow analysis worker started"
+    );
 
     if let Some(ref db_pool) = pool {
         // Policy hot-reload (polls DB for changes, swaps into fast-path cache)
@@ -206,6 +216,15 @@ async fn main() -> Result<()> {
 
         // Shadow check toggles: load from policies table, hot-reload on updates
         spawn_toggle_reloader(db_pool.clone(), toggle_store.clone(), subscriber.clone(), shutdown_rx.clone());
+
+        // Judge calibration: load the fit at startup, then poll for a re-fit. Absent a
+        // fit the store stays inert and judge probabilities stay raw (fail-safe).
+        spawn_calibration_reloader(
+            db_pool.clone(),
+            calibration_store.clone(),
+            std::time::Duration::from_secs(60),
+            shutdown_rx.clone(),
+        );
 
         // Decision service (aggregates verdicts from fast+shadow paths)
         let decision_state = Arc::new(DecisionServiceState {

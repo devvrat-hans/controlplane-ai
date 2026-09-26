@@ -1,12 +1,32 @@
+# syntax=docker/dockerfile:1
+
 FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 RUN corepack enable
 
-COPY package.json pnpm-lock.yaml .npmrc ./
+# Optional registry mirror for slow/unreliable links to registry.npmjs.org, e.g.
+#   NPM_REGISTRY=https://registry.npmmirror.com docker compose up --build
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ENV npm_config_registry=$NPM_REGISTRY
 
-RUN pnpm install --no-frozen-lockfile --ignore-scripts
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+
+# The pnpm store lives in a BuildKit cache mount so an interrupted build resumes
+# from what was already downloaded instead of restarting at zero. The fetch-*
+# flags raise pnpm's 60s default timeout, which was aborting installs on slow links.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install \
+      --store-dir /pnpm/store \
+      --prefer-offline \
+      --no-frozen-lockfile \
+      --ignore-scripts \
+      --network-concurrency 4 \
+      --fetch-timeout 600000 \
+      --fetch-retries 5 \
+      --fetch-retry-mintimeout 20000 \
+      --fetch-retry-maxtimeout 120000
 
 COPY . .
 

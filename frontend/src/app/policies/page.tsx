@@ -27,6 +27,9 @@ interface PolicyThresholds {
   groundedness_enabled: boolean;
   verbosity_enabled: boolean;
   semantic_pii_enabled: boolean;
+  // Decision-model judge (Laya / Jev). The process-level master switch is the
+  // DECISION_JUDGE env var; this per-app flag can only opt an app OUT.
+  decision_judge_enabled: boolean;
 }
 
 const DEFAULT_THRESHOLDS: PolicyThresholds = {
@@ -44,6 +47,7 @@ const DEFAULT_THRESHOLDS: PolicyThresholds = {
   groundedness_enabled: true,
   verbosity_enabled: true,
   semantic_pii_enabled: true,
+  decision_judge_enabled: true,
 };
 
 interface AppInfo {
@@ -152,6 +156,7 @@ export default function PoliciesPage() {
       groundedness_enabled: DEFAULT_THRESHOLDS.groundedness_enabled,
       verbosity_enabled: DEFAULT_THRESHOLDS.verbosity_enabled,
       semantic_pii_enabled: DEFAULT_THRESHOLDS.semantic_pii_enabled,
+      decision_judge_enabled: DEFAULT_THRESHOLDS.decision_judge_enabled,
     });
   };
 
@@ -215,6 +220,7 @@ export default function PoliciesPage() {
             groundedness_enabled: checks.groundedness_enabled ?? config.groundedness_enabled ?? DEFAULT_THRESHOLDS.groundedness_enabled,
             verbosity_enabled: checks.verbosity_enabled ?? config.verbosity_enabled ?? DEFAULT_THRESHOLDS.verbosity_enabled,
             semantic_pii_enabled: checks.semantic_pii_enabled ?? config.semantic_pii_enabled ?? DEFAULT_THRESHOLDS.semantic_pii_enabled,
+            decision_judge_enabled: checks.decision_judge_enabled ?? config.decision_judge_enabled ?? DEFAULT_THRESHOLDS.decision_judge_enabled,
           });
           return;
         }
@@ -317,6 +323,7 @@ export default function PoliciesPage() {
     "pii_detection",
     "toxicity_detection",
     "bias_detection",
+    "decision_judge_enabled",
   ].filter((k) => thresholds[k as keyof PolicyThresholds] as boolean).length;
 
   return (
@@ -336,7 +343,7 @@ export default function PoliciesPage() {
           </div>
           <div className="flex items-center gap-3">
             <Badge variant="outline" className="text-xs">
-              {enabledCount}/10 checks enabled
+              {enabledCount}/11 checks enabled
             </Badge>
             {policyVersion !== null && (
               <Badge variant="secondary" className="text-xs">
@@ -676,10 +683,19 @@ export default function PoliciesPage() {
 
             <GuardrailToggle
               label="Semantic PII Detection"
-              description="NLP-based PII detection on response content. Identifies personally identifiable information using NER and pattern analysis."
+              description="Quasi-identifier / re-identification heuristic. Runs as a fallback: when Presidio or the judge reports PII on the same response, the stronger detector supersedes this keyword heuristic."
               provider="NER Model"
               enabled={thresholds.semantic_pii_enabled}
               onChange={() => toggle("semantic_pii_enabled")}
+              disabled={!isEditable}
+            />
+
+            <GuardrailToggle
+              label="Decision-Model Judge"
+              description="Laya/Jev scores every governance question in one batched forward pass and returns calibrated probabilities. Shadow-path only: it scores, it never decides — the decision engine applies the thresholds. Requires DECISION_JUDGE=laya|jev on the server; this switch can only opt an app out."
+              provider="Laya / Jev"
+              enabled={thresholds.decision_judge_enabled}
+              onChange={() => toggle("decision_judge_enabled")}
               disabled={!isEditable}
             />
           </CardContent>

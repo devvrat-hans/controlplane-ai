@@ -3,9 +3,25 @@
 # Requires: nvidia-container-toolkit installed on host.
 #
 # Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# To also run the optional Laya decision-model judge on the GPU:
+#   DECISION_JUDGE=laya docker compose --profile judge \
+#     -f docker-compose.yml -f docker-compose.gpu.yml up --build
 
 services:
   ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Laya judge on GPU (~33 ms per forward pass instead of ~200-460 ms on CPU).
+  laya:
+    environment:
+      LAYA_DEVICE: cuda
     deploy:
       resources:
         reservations:

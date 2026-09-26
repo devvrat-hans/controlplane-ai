@@ -6,6 +6,8 @@
 # Usage:
 #   CPU only:  docker compose up --build
 #   With GPU:  docker compose --profile gpu up --build
+#   With the optional Laya decision-model judge:
+#              DECISION_JUDGE=laya docker compose --profile judge up --build
 #
 # The GPU profile uses NVIDIA CUDA. Requires nvidia-container-toolkit installed on host.
 # If no GPU is available, use the default (CPU) mode — it works out of the box.
@@ -77,6 +79,30 @@ services:
       retries: 5
       start_period: 60s
 
+  # --- Laya decision-model judge (OPTIONAL — off by default) ---
+  # A Jev-compatible non-autoregressive "System One" decision model. The shadow path can
+  # use it as one extra calibrated voter. It is NOT called unless DECISION_JUDGE is set to
+  # laya|jev, and it lives behind the `judge` profile so a normal `docker compose up` is
+  # unchanged. See docs/analysis/laya-integration-plan.md.
+  laya:
+    profiles: ["judge"]
+    build:
+      context: ./services/laya
+      dockerfile: Dockerfile
+    container_name: controlplane-laya
+    ports:
+      - "8300:8000"
+    environment:
+      LAYA_DEVICE: cpu
+      LAYA_PRELOAD: "1"
+    healthcheck:
+      # TCP check: does not assume a particular HTTP endpoint on the model server.
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), 2)"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
   # --- Rust Gateway (Proxy + Dashboard API + All Workers) ---
   gateway:
     build:
@@ -94,6 +120,11 @@ services:
       GUARDRAILS_URL: http://guardrails:8200
       JWT_SECRET: change-me-in-production
       SEED_DEMO_USERS: "true"
+      # Decision-model judge (optional). Default "off" keeps the shadow path exactly as
+      # it was; set DECISION_JUDGE=laya and start the `judge` profile to enable it.
+      DECISION_JUDGE: ${DECISION_JUDGE:-off}
+      LAYA_URL: http://laya:8000
+      LAYA_TIMEOUT_MS: "5000"
       RUST_LOG: controlplane=info,tower_http=info
     ports:
       - "8900:8900"
@@ -113,6 +144,9 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: http://localhost:8080
+        # Override to use a faster npm mirror when registry.npmjs.org is slow:
+        #   NPM_REGISTRY=https://registry.npmmirror.com docker compose up --build
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
     container_name: controlplane-frontend
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8080

@@ -91,6 +91,28 @@ interface DetectionQuality {
   }[];
 }
 
+interface JudgeAgreement {
+  days: number;
+  threshold: number;
+  comparable_pairs: number;
+  agreements: number;
+  disagreements: number;
+  agreement_rate: number;
+  judge_only: number;
+  heuristic_only: number;
+  axes: {
+    axis: string;
+    comparable: number;
+    disagreements: number;
+    agreement_rate: number;
+    judge_flagged: number;
+    heuristic_flagged: number;
+  }[];
+  judge_checks: { check_name: string; flagged: number; avg_confidence: number }[];
+  calibration_version: number | null;
+  raw_probabilities: boolean;
+}
+
 interface FeedbackData {
   patterns_promoted: number;
   threshold_adjustments: number;
@@ -223,6 +245,12 @@ export default function AnalyticsPage() {
   const { data: feedbackData } = useQuery<FeedbackData>({
     queryKey: ["analytics-feedback"],
     queryFn: () => fetchApi<FeedbackData>(`/api/v1/metrics/feedback-effectiveness`),
+    refetchInterval: 15000,
+  });
+
+  const { data: judgeAgreement } = useQuery<JudgeAgreement>({
+    queryKey: ["analytics-judge-agreement", hours],
+    queryFn: () => fetchApi<JudgeAgreement>(`/api/v1/metrics/judge-agreement?days=${Math.max(1, Math.ceil(hours / 24))}`),
     refetchInterval: 15000,
   });
 
@@ -712,6 +740,111 @@ export default function AnalyticsPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Row 4b: Hybrid judge panel — coverage and conflict, not an accuracy claim */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium">Hybrid Judge — Coverage &amp; Conflict</CardTitle>
+              <div className="flex items-center gap-2">
+                {judgeAgreement && (
+                  <Badge variant="outline" className="text-[10px] font-mono">
+                    {judgeAgreement.calibration_version !== null
+                      ? `calibration v${judgeAgreement.calibration_version}`
+                      : "uncalibrated"}
+                  </Badge>
+                )}
+                <span className="text-xs text-muted-foreground font-mono">
+                  last {judgeAgreement?.days ?? 1}d
+                </span>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {judgeAgreement ? (
+              <>
+                {/* The three configurations of the ablation, for the pairs we can
+                    actually separate. `heuristic-only` and `judge-only` are coverage
+                    differences; `comparable` is where agreement is measurable. */}
+                <div className="grid grid-cols-4 gap-3 text-center">
+                  <div>
+                    <p className="text-lg font-semibold">{judgeAgreement.heuristic_only}</p>
+                    <p className="text-[10px] text-muted-foreground">heuristic-only</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold">{judgeAgreement.judge_only}</p>
+                    <p className="text-[10px] text-muted-foreground">judge-only</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold">{judgeAgreement.comparable_pairs}</p>
+                    <p className="text-[10px] text-muted-foreground">both fired</p>
+                  </div>
+                  <div>
+                    <p className={`text-lg font-semibold ${
+                      judgeAgreement.disagreements > 0 ? "text-[#7928ca]" : "text-muted-foreground"
+                    }`}>
+                      {judgeAgreement.disagreements}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">disagreements</p>
+                  </div>
+                </div>
+
+                {judgeAgreement.axes.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-border">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                      Agreement by axis (gap &ge; {judgeAgreement.threshold.toFixed(2)})
+                    </p>
+                    {judgeAgreement.axes.map((a) => (
+                      <div key={a.axis} className="flex items-center gap-2">
+                        <span className="text-xs capitalize w-28">{a.axis}</span>
+                        <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-[#50e3c2]"
+                            style={{ width: `${a.agreement_rate * 100}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-muted-foreground w-24 text-right">
+                          {(a.agreement_rate * 100).toFixed(0)}% ({a.comparable} pairs)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <p className="text-[11px] text-muted-foreground/70 pt-2 border-t border-border leading-relaxed">
+                  {judgeAgreement.raw_probabilities
+                    ? "No calibration fit exists yet, so judge probabilities are raw and disagreement may be a scale difference rather than a genuine conflict. "
+                    : "Judge probabilities are calibrated (temperature-scaled), so a gap here is a real conflict. "}
+                  Disagreements are routed to human review and become labelled precedents. Accuracy metrics
+                  (precision / recall / FP-rate per axis, ablation across heuristic-only, judge-only and fused)
+                  come from <code>scripts/eval_accuracy.sh</code> run against <code>reviewer_overrides</code> —
+                  this panel deliberately makes no accuracy claim on its own.
+                </p>
+
+                {judgeAgreement.judge_checks.length > 0 && (
+                  <div className="space-y-1.5 pt-2 border-t border-border">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                      Judge detectors
+                    </p>
+                    {judgeAgreement.judge_checks.map((c) => (
+                      <div key={c.check_name} className="flex items-center gap-2 text-xs">
+                        <span className="font-mono text-[11px] flex-1 truncate">{c.check_name}</span>
+                        <span className="text-muted-foreground">{c.flagged} verdicts</span>
+                        <span className="font-mono text-[10px] text-muted-foreground/70">
+                          avg p={(c.avg_confidence * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex h-[150px] items-center justify-center text-sm text-muted-foreground">
+                No judge verdicts recorded.
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Row 5: Per-Policy Effectiveness (all 10 policies) */}
         <Card>
