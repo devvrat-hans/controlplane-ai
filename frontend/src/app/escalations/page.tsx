@@ -65,20 +65,27 @@ interface EscalationListResponse {
   total: number;
 }
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
+
 export default function EscalationsPage() {
   const user = useUser();
   const canResolve = user ? canResolveEscalations(user.role) : false;
   const [tab, setTab] = useState<"open" | "resolved">("open");
   const [selected, setSelected] = useState<string | null>(null);
   const [resolvedToast, setResolvedToast] = useState<string | null>(null);
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [offset, setOffset] = useState(0);
 
   const queryClient = useQueryClient();
 
+  // Reset pagination when switching tabs
+  useEffect(() => { setOffset(0); }, [tab]);
+
   const { data, isLoading } = useQuery<EscalationListResponse>({
-    queryKey: ["escalations", tab],
+    queryKey: ["escalations", tab, pageSize, offset],
     queryFn: () =>
       fetchApi<EscalationListResponse>(
-        `/api/v1/escalations?status=${tab === "open" ? "open" : "resolved"}&limit=50`
+        `/api/v1/escalations?status=${tab === "open" ? "all_open" : "resolved"}&limit=${pageSize}&offset=${offset}`
       ),
     refetchInterval: 5000,
   });
@@ -211,6 +218,45 @@ export default function EscalationsPage() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Pagination */}
+            {(data?.total ?? 0) > 0 && (
+              <div className="flex items-center justify-between px-1 py-2 text-xs text-muted-foreground">
+                <span>
+                  Showing {offset + 1}&ndash;{Math.min(offset + pageSize, data?.total ?? 0)} of {data?.total ?? 0}
+                </span>
+                <div className="flex items-center gap-3">
+                  <span className="flex items-center gap-1.5">
+                    Per page:
+                    <select
+                      value={pageSize}
+                      onChange={(e) => { setPageSize(Number(e.target.value)); setOffset(0); }}
+                      className="rounded border border-border bg-background px-1.5 py-0.5 text-xs"
+                    >
+                      {PAGE_SIZE_OPTIONS.map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </span>
+                  <div className="flex gap-1">
+                    <button
+                      disabled={offset === 0}
+                      onClick={() => setOffset(Math.max(0, offset - pageSize))}
+                      className="rounded border border-border px-2 py-0.5 hover:bg-accent disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Prev
+                    </button>
+                    <button
+                      disabled={offset + pageSize >= (data?.total ?? 0)}
+                      onClick={() => setOffset(offset + pageSize)}
+                      className="rounded border border-border px-2 py-0.5 hover:bg-accent disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Detail panel */}

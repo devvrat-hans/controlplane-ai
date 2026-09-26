@@ -30,15 +30,20 @@ const API_GROUPS: EndpointGroup[] = [
       {
         method: "POST",
         path: "/v1/messages",
-        description: "Forward a request to the upstream AI model through the governance proxy. The request is intercepted, checked by fast-path rules, and the response is inspected before delivery.",
+        description: "Forward a request to the upstream AI model through the governance proxy. Supports app_id and session_id for routing and multi-turn tracking. The request is intercepted, checked by fast-path rules, and the response is inspected before delivery.",
         auth: true,
         body: `{
   "model": "qwen2.5:1.5b",
+  "app_id": "10000000-0000-0000-0000-000000000001",
+  "session_id": "optional-session-uuid",
   "messages": [
     { "role": "user", "content": "What is 2+2?" }
   ],
   "max_tokens": 256
-}`,
+}
+// app_id: Routes to specific app policies (fallback: default app)
+// session_id: Links multi-turn conversations (fallback: derived from messages)
+// Also accepted via headers: X-App-Id, X-Session-Id`,
         response: `{
   "id": "msg_abc123",
   "content": [{ "type": "text", "text": "4" }],
@@ -73,8 +78,8 @@ const API_GROUPS: EndpointGroup[] = [
       },
       {
         method: "GET",
-        path: "/api/v1/verdicts/recent?limit=50",
-        description: "Fetch recent verdicts from the database. Supports optional app_id and outcome filters.",
+        path: "/api/v1/verdicts/recent?limit=2000",
+        description: "Fetch recent verdicts from the database. Supports up to 10000 limit. Filters: app_id, outcome.",
         auth: false,
       },
       {
@@ -127,14 +132,20 @@ const API_GROUPS: EndpointGroup[] = [
       },
       {
         method: "GET",
-        path: "/api/v1/feedback/precedents?escalation_id=<uuid>",
-        description: "Retrieve reviewer precedents (similar past decisions) for an escalation case or call — the RAG feedback loop.",
+        path: "/api/v1/feedback/precedents",
+        description: "Retrieve reviewer precedents (similar past decisions). Pass ?escalation_id=UUID or ?call_id=UUID as query param.",
         auth: false,
       },
       {
         method: "GET",
-        path: "/api/v1/requests?limit=50&offset=0&search=&model=&outcome=",
-        description: "List intercepted API calls with server-side search, model filter, outcome filter, and keyset pagination.",
+        path: "/api/v1/requests?limit=50&offset=0&search=&model=&outcome=&app_id=",
+        description: "List intercepted API calls with server-side search, model filter, outcome filter, app filter, and pagination (up to 500).",
+        auth: false,
+      },
+      {
+        method: "GET",
+        path: "/api/v1/sessions/{call_id}/thread",
+        description: "Get the full conversation thread for a session — all turns, verdicts, and accumulated risk.",
         auth: false,
       },
       {
@@ -157,8 +168,8 @@ const API_GROUPS: EndpointGroup[] = [
       },
       {
         method: "GET",
-        path: "/api/v1/escalations?status=open&limit=50",
-        description: "List escalation cases. Filter by status (open, in_review, resolved).",
+        path: "/api/v1/escalations?status=all_open&limit=50",
+        description: "List escalation cases. Status: open, in_review, resolved, or all_open (open + in_review).",
         auth: false,
       },
       {
@@ -206,20 +217,34 @@ const API_GROUPS: EndpointGroup[] = [
       {
         method: "PUT",
         path: "/api/v1/apps/{app_id}/governance",
-        description: "Update the data governance level (high/medium/low) for an application.",
+        description: "Update the data governance level (high/medium/low) for an application. Adjusts policy thresholds accordingly.",
         auth: false,
-        body: `{ "level": "low" }`,
+        body: `{ "level": "low" }
+// high: stricter (lower block/escalate thresholds, higher groundedness)
+// medium: balanced defaults
+// low: relaxed (higher thresholds needed to trigger)`,
       },
       {
         method: "GET",
         path: "/api/v1/profiles",
-        description: "List available regulatory profiles (EU-Financial, US-Healthcare, etc.).",
+        description: "List available regulatory profiles (EU-Financial, US-Healthcare, India-General, etc.) with their default thresholds.",
         auth: false,
+      },
+      {
+        method: "PUT",
+        path: "/api/v1/profiles/{profile_id}",
+        description: "Update a regulatory profile's default thresholds independently. Does not affect apps until explicitly applied.",
+        auth: false,
+        body: `{
+  "responsibility": { "block_threshold": 0.85, "escalate_threshold": 0.5 },
+  "performance": { "hallucination_threshold": 0.7, "groundedness_min": 0.6 },
+  "cost": { "max_tokens_per_request": 4000, "retry_max": 3 }
+}`,
       },
       {
         method: "POST",
         path: "/api/v1/policies/{app_id}/profile",
-        description: "Apply a regulatory profile to an application, updating all thresholds.",
+        description: "Apply a regulatory profile to an application, copying its thresholds to the app's runtime policies.",
         auth: false,
         body: `{ "profile_id": "eu-financial" }`,
       },
@@ -418,12 +443,73 @@ function TryItButton({ path }: { path: string }) {
     setResult(null);
     setError(null);
     try {
-      // Replace path params with demo values
-      let url = `${API_BASE}${path}`;
-      url = url.replace(/<[^>]+>/g, "00000000-0000-0000-0000-000000000001");
-      url = url.replace(/\?.*$/, ""); // strip query params for simplicity
+      let url = path;
+
+      // For endpoints needing a real call_id, fetch one from the DB
+      if (url.includes("{call_id}") || (url.includes("{id}") && url.includes("/requests"))) {
+        const res = await fetch(`${API_BASE}/api/v1/requests?limit=1`);
+        const data = await res.json();
+        const realId = data?.requests?.[0]?.id;
+        if (realId) {
+          url = url.replace(/\{call_id\}/g, realId).replace(/\{id\}/g, realId);
+        }
+      }
+
+      // For escalation endpoints needing a real escalation ID
+      if (url.includes("{id}") && url.includes("/escalations")) {
+        const res = await fetch(`${API_BASE}/api/v1/escalations?status=all_open&limit=1`);
+        const data = await res.json();
+        const realId = data?.cases?.[0]?.id;
+        if (realId) url = url.replace(/\{id\}/g, realId);
+      }
+
+      // For api-keys endpoints needing a real key ID
+      if (url.includes("{id}") && url.includes("/api-keys")) {
+        const res = await fetch(`${API_BASE}/api/v1/api-keys`);
+        const data = await res.json();
+        const realId = data?.keys?.[0]?.id;
+        if (realId) url = url.replace(/\{id\}/g, realId);
+        else url = url.replace(/\{id\}/g, "no-keys-exist");
+      }
+
+      // Replace {app_id} with a known demo app
+      url = url.replace(/\{app_id\}/g, "10000000-0000-0000-0000-000000000001");
+      // Replace {profile_id} with a known demo profile
+      url = url.replace(/\{profile_id\}/g, "eu-financial");
+      // Replace remaining path params and <angle> params
+      url = url.replace(/\{[^}]+\}/g, "10000000-0000-0000-0000-000000000001");
+      url = url.replace(/<[^>]+>/g, "10000000-0000-0000-0000-000000000001");
+      // For feedback/precedents, fetch a real call_id to use as query param
+      if (url.includes("/feedback/precedents")) {
+        const res = await fetch(`${API_BASE}/api/v1/requests?limit=1`);
+        const data = await res.json();
+        const realCallId = data?.requests?.[0]?.id;
+        if (realCallId) {
+          url = `/api/v1/feedback/precedents?call_id=${realCallId}`;
+        }
+      }
+
+      // Strip query param placeholders but keep real values
+      const qIdx = url.indexOf("?");
+      if (qIdx > -1) {
+        const base = url.slice(0, qIdx);
+        const params = new URLSearchParams(url.slice(qIdx + 1));
+        const cleaned = new URLSearchParams();
+        params.forEach((v, k) => {
+          if (k === "limit") cleaned.set(k, "5");
+          else if (k === "status") cleaned.set(k, v);
+          else if (k === "window_hours") cleaned.set(k, v);
+          else if (k === "format") cleaned.set(k, v);
+          else if (k === "call_id") cleaned.set(k, v);
+          else if (k === "escalation_id") cleaned.set(k, v);
+          else if (k === "app_id") cleaned.set(k, v);
+        });
+        url = cleaned.toString() ? `${base}?${cleaned}` : base;
+      }
+
+      const fullUrl = `${API_BASE}${url}`;
       const start = performance.now();
-      const res = await fetch(url);
+      const res = await fetch(fullUrl);
       const elapsed = Math.round(performance.now() - start);
       const text = await res.text();
       let formatted = text;

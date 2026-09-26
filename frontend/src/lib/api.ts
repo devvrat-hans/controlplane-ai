@@ -41,13 +41,16 @@ export interface RecentVerdictsResponse {
   total: number;
 }
 
-export function getStatsOverview() {
-  return fetchApi<StatsOverview>("/api/v1/stats/overview");
+export function getStatsOverview(appId?: string) {
+  const params = appId && appId !== "all" ? `?app_id=${appId}` : "";
+  return fetchApi<StatsOverview>(`/api/v1/stats/overview${params}`);
 }
 
-export function getRecentVerdicts(limit = 10) {
+export function getRecentVerdicts(limit = 10, appId?: string) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (appId && appId !== "all") params.set("app_id", appId);
   return fetchApi<RecentVerdictsResponse>(
-    `/api/v1/verdicts/recent?limit=${limit}`
+    `/api/v1/verdicts/recent?${params.toString()}`
   );
 }
 
@@ -157,12 +160,13 @@ export interface RequestsListResponse {
   offset: number;
 }
 
-export function getRequests(opts: { limit?: number; offset?: number; search?: string; model?: string; outcome?: string } = {}) {
+export function getRequests(opts: { limit?: number; offset?: number; search?: string; model?: string; outcome?: string; app_id?: string } = {}) {
   const params = new URLSearchParams();
   if (opts.limit) params.set("limit", String(opts.limit));
   if (opts.offset) params.set("offset", String(opts.offset));
   if (opts.search) params.set("search", opts.search);
   if (opts.model && opts.model !== "all") params.set("model", opts.model);
   if (opts.outcome && opts.outcome !== "all") params.set("outcome", opts.outcome);
+  if (opts.app_id && opts.app_id !== "all") params.set("app_id", opts.app_id);
   return fetchApi<RequestsListResponse>(`/api/v1/requests?${params.toString()}`);
 }

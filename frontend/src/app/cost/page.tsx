@@ -12,7 +12,6 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
-  ReferenceLine,
 } from "recharts";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

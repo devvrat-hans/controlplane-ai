@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use controlplane_common::events::{subjects, DecisionPayload, EventEnvelope, VerdictPayload};
 use controlplane_common::models::{Decision, Verdict};
-use controlplane_common::types::AppId;
+use controlplane_common::types::{AppId, Outcome};
 use controlplane_platform::messaging::{EventPublisher, EventSubscriber};
 
 use crate::aggregator::VerdictAggregator;
@@ -96,7 +96,7 @@ async fn aggregate_verdicts(
     // Aggregate verdicts
     let mut result = state.aggregator.aggregate_with_reasoning(&verdicts);
 
-    // --- Feedback RAG: retrieve similar past reviewer decisions and annotate ---
+    // --- Feedback RAG: retrieve similar past reviewer decisions and suppress/annotate ---
     let mut consulted_precedents: Vec<Uuid> = Vec::new();
     if let Some(response_text) =
         fetch_call_response_text(&state.pool, request.call_id).await
@@ -109,6 +109,28 @@ async fn aggregate_verdicts(
             0.3,
         )
         .await;
+
+        // Auto-suppress: if a strongly similar case (>=60%) was dismissed/overridden,
+        // downgrade escalate/edit to pass. This is the active feedback loop.
+        let dominated_by_dismiss = precedents.iter().any(|p| {
+            p.score >= 0.6
+                && (p.reviewer_action == "dismiss" || p.reviewer_action == "override")
+        });
+        if dominated_by_dismiss
+            && (result.final_outcome == Outcome::Escalate || result.final_outcome == Outcome::Edit)
+        {
+            info!(
+                call_id = %request.call_id,
+                "Feedback loop: suppressing {} -> pass (similar case was dismissed/overridden)",
+                result.final_outcome
+            );
+            result.final_outcome = Outcome::Pass;
+            result.primary_reason = format!(
+                "Auto-suppressed by feedback loop: {}. Similar past case was dismissed by a reviewer.",
+                result.primary_reason
+            );
+        }
+
         let (annotation, ids) =
             crate::feedback::annotate_from_precedents(result.final_outcome.as_str(), &precedents);
         consulted_precedents = ids;

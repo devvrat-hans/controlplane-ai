@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { getRequests } from "@/lib/api";
 import type { RequestListItem } from "@/lib/api";
+import { useApp } from "@/components/providers/app-provider";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
@@ -17,9 +19,11 @@ const OUTCOME_STYLES: Record<string, string> = {
   escalate: "bg-[#7928ca]/10 text-[#7928ca] border-[#7928ca]/20",
 };
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE_OPTIONS = [25, 100, 200, 500] as const;
 
 export default function RequestsPage() {
+  const { selectedAppId } = useApp();
+  const [pageSize, setPageSize] = useState<number>(25);
   const [offset, setOffset] = useState(0);
   const [outcomeFilter, setOutcomeFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -28,8 +32,8 @@ export default function RequestsPage() {
   const [compareMode, setCompareMode] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["requests-list", offset, search, modelFilter, outcomeFilter],
-    queryFn: () => getRequests({ limit: PAGE_SIZE, offset, search, model: modelFilter, outcome: outcomeFilter }),
+    queryKey: ["requests-list", offset, search, modelFilter, outcomeFilter, pageSize, selectedAppId],
+    queryFn: () => getRequests({ limit: pageSize, offset, search, model: modelFilter, outcome: outcomeFilter, app_id: selectedAppId }),
     refetchInterval: 10000,
   });
 
@@ -148,15 +152,29 @@ export default function RequestsPage() {
         </Card>
 
         {/* Pagination */}
-        {total > PAGE_SIZE && (
-          <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
             <p className="text-sm text-muted-foreground">
-              Showing {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of{" "}
+              Showing {offset + 1}–{Math.min(offset + pageSize, total)} of{" "}
               {total}
             </p>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">Per page:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setOffset(0); }}
+                className="rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring/20"
+              >
+                {PAGE_SIZE_OPTIONS.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {total > pageSize && (
             <div className="flex gap-2">
               <button
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                onClick={() => setOffset(Math.max(0, offset - pageSize))}
                 disabled={offset === 0}
                 className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -164,22 +182,23 @@ export default function RequestsPage() {
               </button>
               <button
                 onClick={() =>
-                  setOffset(Math.min(total - PAGE_SIZE, offset + PAGE_SIZE))
+                  setOffset(Math.min(total - pageSize, offset + pageSize))
                 }
-                disabled={offset + PAGE_SIZE >= total}
+                disabled={offset + pageSize >= total}
                 className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Next →
               </button>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </DashboardShell>
   );
 }
 
 function RequestRow({ request, selectable, selected, onToggle }: { request: RequestListItem; selectable?: boolean; selected?: boolean; onToggle?: () => void }) {
+  const router = useRouter();
   const time = new Date(request.created_at).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
@@ -189,15 +208,22 @@ function RequestRow({ request, selectable, selected, onToggle }: { request: Requ
     (request.token_count_input ?? 0) + (request.token_count_output ?? 0);
 
   return (
-    <div className={`flex items-center justify-between px-4 py-3 transition-colors ${
-      selected ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-accent/30"
-    }`}>
+    <div
+      className={`flex items-center justify-between px-4 py-3 transition-colors cursor-pointer ${
+        selected ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-accent/30"
+      }`}
+      onClick={(e) => {
+        if (selectable) return;
+        router.push(`/requests/${request.id}`);
+      }}
+    >
       <div className="flex items-center gap-3 min-w-0 flex-1">
         {selectable && (
           <input
             type="checkbox"
             checked={selected}
             onChange={onToggle}
+            onClick={(e) => e.stopPropagation()}
             className="h-4 w-4 rounded border-border shrink-0"
           />
         )}
@@ -227,6 +253,7 @@ function RequestRow({ request, selectable, selected, onToggle }: { request: Requ
             {request.fast_path_latency_ms}ms
           </span>
         )}
+        <span className="text-muted-foreground/40 text-xs">→</span>
       </div>
     </div>
   );
@@ -236,17 +263,35 @@ function ComparePanel({ ids }: { ids: string[] }) {
   const [left, setLeft] = useState<RequestListItem | null>(null);
   const [right, setRight] = useState<RequestListItem | null>(null);
 
-  // Fetch both request details
-  useState(() => {
-    fetch(`${API_BASE}/api/v1/requests?search=${ids[0]}`)
+  useEffect(() => {
+    const severityOrder: Record<string, number> = { block: 0, escalate: 1, edit: 2, pass: 3 };
+    const worstOutcome = (verdicts: { outcome: string }[]): string => {
+      if (!verdicts?.length) return "pass";
+      return verdicts.reduce((worst, v) =>
+        (severityOrder[v.outcome] ?? 3) < (severityOrder[worst.outcome] ?? 3) ? v : worst
+      ).outcome;
+    };
+    const mapToItem = (d: { call: Record<string, unknown>; verdicts: { outcome: string }[] }): RequestListItem | null => {
+      const c = d.call;
+      if (!c) return null;
+      return {
+        id: c.id as string, app_id: c.app_id as string, model: c.model as string,
+        token_count_input: c.token_count_input as number | null,
+        token_count_output: c.token_count_output as number | null,
+        upstream_latency_ms: c.upstream_latency_ms as number | null,
+        fast_path_latency_ms: c.fast_path_latency_ms as number | null,
+        outcome: worstOutcome(d.verdicts), created_at: c.created_at as string,
+      };
+    };
+    fetch(`${API_BASE}/api/v1/requests/${ids[0]}`)
       .then(r => r.json())
-      .then(d => setLeft(d.requests?.[0] ?? null))
+      .then(d => { const item = mapToItem(d); if (item) setLeft(item); })
       .catch(() => {});
-    fetch(`${API_BASE}/api/v1/requests?search=${ids[1]}`)
+    fetch(`${API_BASE}/api/v1/requests/${ids[1]}`)
       .then(r => r.json())
-      .then(d => setRight(d.requests?.[0] ?? null))
+      .then(d => { const item = mapToItem(d); if (item) setRight(item); })
       .catch(() => {});
-  });
+  }, [ids[0], ids[1]]);
 
   if (!left || !right) return null;
 

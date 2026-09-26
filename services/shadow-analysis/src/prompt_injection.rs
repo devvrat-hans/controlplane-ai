@@ -95,10 +95,11 @@ impl PromptInjectionDetector {
         // Layer 1: Pattern matching
         let mut matches: Vec<PatternMatchResult> = Vec::new();
         for pat in INJECTION_PATTERNS {
-            if regex_contains(prompt, pat.pattern) {
+            if let Some(phrase) = regex_contains(prompt, pat.pattern) {
                 matches.push(PatternMatchResult {
                     category: pat.category,
                     weight: pat.weight,
+                    matched_phrase: phrase,
                 });
             }
         }
@@ -135,10 +136,12 @@ impl PromptInjectionDetector {
             return None;
         }
 
-        let categories: Vec<&str> = result.matches.iter().map(|m| m.category).collect();
-        let unique_categories: Vec<&str> = {
+        let trigger_phrases: Vec<String> = {
             let mut seen = std::collections::HashSet::new();
-            categories.into_iter().filter(|c| seen.insert(*c)).collect()
+            result.matches.iter()
+                .filter(|m| seen.insert(m.matched_phrase.to_lowercase()))
+                .map(|m| format!("'{}'", m.matched_phrase))
+                .collect()
         };
 
         let outcome = if result.score >= 0.90 {
@@ -153,9 +156,9 @@ impl PromptInjectionDetector {
             outcome,
             confidence: result.score,
             reason: format!(
-                "Prompt injection detected (score: {:.2}): {}",
+                "Prompt injection detected (score: {:.2}): due to {}",
                 result.score,
-                unique_categories.join(", ")
+                trigger_phrases.join(", ")
             ),
             duration_ms: result.duration_ms,
         })
@@ -172,28 +175,25 @@ pub struct PromptInjectionResult {
 pub struct PatternMatchResult {
     pub category: &'static str,
     pub weight: f32,
+    pub matched_phrase: String,
 }
 
 /// Check if a text matches a pattern's key phrases.
-/// Instead of implementing full regex, we extract the key meaningful phrases
-/// from each pattern and check if they appear in the text.
-fn regex_contains(text: &str, pattern: &str) -> bool {
+/// Returns the matched phrase if found, None otherwise.
+fn regex_contains(text: &str, pattern: &str) -> Option<String> {
     let lower = text.to_lowercase();
 
-    // Extract key phrases: split on regex operators, filter meaningful segments
     let clean: String = pattern.chars()
         .map(|c| match c {
-            '\\' => ' ',  // escape char → space
+            '\\' => ' ',
             '(' | ')' | '[' | ']' | '{' | '}' => ' ',
             '+' | '?' | '*' | '^' | '$' => ' ',
-            '|' => '|',  // keep alternation
+            '|' => '|',
             _ => c,
         })
         .collect();
 
-    // Split by alternation `|` and try each segment
     for segment in clean.split('|') {
-        // Collapse whitespace and filter short tokens
         let words: Vec<&str> = segment.split_whitespace()
             .filter(|w| w.len() > 2)
             .collect();
@@ -202,24 +202,24 @@ fn regex_contains(text: &str, pattern: &str) -> bool {
             continue;
         }
 
-        // Try matching the full phrase
         let phrase = words.join(" ");
-        if lower.contains(&phrase) {
-            return true;
+        if let Some(pos) = lower.find(&phrase) {
+            let original = &text[pos..pos + phrase.len()];
+            return Some(original.to_string());
         }
 
-        // If phrase is long, also try matching a sliding window of key words
         if words.len() >= 3 {
             for window in words.windows(2) {
                 let sub = window.join(" ");
-                if lower.contains(&sub) {
-                    return true;
+                if let Some(pos) = lower.find(&sub) {
+                    let original = &text[pos..pos + sub.len()];
+                    return Some(original.to_string());
                 }
             }
         }
     }
 
-    false
+    None
 }
 
 /// Analyze structural signals in the prompt that suggest injection.

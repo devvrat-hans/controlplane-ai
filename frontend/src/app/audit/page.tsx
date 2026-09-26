@@ -3,7 +3,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/select";
 import { fetchApi } from "@/lib/api";
@@ -42,7 +42,6 @@ export default function AuditPage() {
     cursor: "",
   });
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [allRecords, setAllRecords] = useState<AuditRecord[]>([]);
 
   const { data, isLoading } = useQuery<AuditResponse>({
     queryKey: ["audit", filters],
@@ -82,7 +81,6 @@ export default function AuditPage() {
 
   const resetFilters = () => {
     setFilters({ app_id: "", outcome: "", axis: "", limit: 25, cursor: "" });
-    setAllRecords([]);
   };
 
   return (

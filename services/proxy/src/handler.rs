@@ -65,6 +65,21 @@ pub async fn proxy_handler(
     // Priority: explicit "session_id" field > X-Session-Id header > derived from messages hash
     let session_id: Option<Uuid> = extract_session_id(&request_body, &headers);
 
+    // Extract app_id: explicit "app_id" in body > X-App-Id header > default
+    let app_id: Uuid = extract_app_id(&request_body, &headers)
+        .unwrap_or(state.default_app_id);
+
+    // Extract profile_id (0-5) for Agent-Internal (App1) regulatory profile override
+    let profile_id: Option<u8> = extract_profile_id(&request_body);
+    if let Some(pid) = profile_id {
+        info!(
+            correlation_id = %correlation_id,
+            profile_id = pid,
+            profile_name = profile_id_to_name(pid),
+            "Using regulatory profile override"
+        );
+    }
+
     // Forward to upstream
     let upstream_path = state.provider.rewrite_path(&path, &model_in_body);
     let upstream_url = format!("{}{}", state.upstream_base_url, upstream_path);
@@ -121,10 +136,38 @@ pub async fn proxy_handler(
     // Extract token usage from response (provider-aware)
     let (input_tokens, output_tokens) = state.provider.extract_token_usage(&response_body);
 
+    // Look up per-app cost cap from DB policies (or from profile if profile_id provided for App1)
+    let app_max_tokens: Option<i32> = if let Some(pool) = state.pool.as_ref() {
+        if let Some(pid) = profile_id {
+            // profile_id provided — look up from policy_profiles table
+            let profile_name = profile_id_to_name(pid);
+            sqlx::query_scalar::<_, i32>(
+                "SELECT (default_thresholds->'cost'->>'max_tokens_per_request')::int FROM policy_profiles WHERE id = $1 LIMIT 1"
+            )
+            .bind(profile_name)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+        } else {
+            // No profile_id — use app's own policy (which may link to a default profile)
+            sqlx::query_scalar::<_, i32>(
+                "SELECT (threshold_config->>'max_tokens_per_request')::int FROM policies WHERE app_id = $1 AND axis = 'cost' AND is_active = true LIMIT 1"
+            )
+            .bind(app_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+        }
+    } else {
+        None
+    };
+
     // --- Fast-path checks (synchronous, must complete before delivery) ---
     let fast_path_start = Instant::now();
     let fast_path_result = run_fast_path_safe(
-        &state.fast_path, &response_body, output_tokens, &request_body, correlation_id,
+        &state.fast_path, &response_body, output_tokens, &request_body, correlation_id, app_max_tokens,
     ).await;
     let fast_path_latency_ms = fast_path_start.elapsed().as_millis() as i32;
 
@@ -140,7 +183,6 @@ pub async fn proxy_handler(
     };
 
     // Persist intercepted_call to DB (must happen before verdict events)
-    let app_id = state.default_app_id;
     let has_tool_use = fast_path_result.has_tool_use;
     if let Some(ref pool) = state.pool {
         let req_json: Option<serde_json::Value> = serde_json::from_slice(&request_body).ok();
@@ -173,19 +215,23 @@ pub async fn proxy_handler(
     // Publish verdicts to SSE (for all outcomes including pass/block)
     let publisher_for_verdicts = state.publisher.clone();
     let verdicts_for_stream: Vec<Verdict> = if fast_path_result.verdicts.is_empty() {
-        vec![Verdict::new(
-            correlation_id,
-            controlplane_common::types::Axis::Responsibility,
-            VerdictPath::Fast,
-            fast_path_result.outcome,
-            1.0,
-            match fast_path_result.outcome {
-                Outcome::Pass => "All checks passed",
-                Outcome::Block => fast_path_result.block_reason.as_deref().unwrap_or("Blocked"),
-                _ => "Processed",
-            },
-            "fast-path-summary",
-        ).with_duration(fast_path_latency_ms)]
+        // No individual check triggered — create pass verdicts for each axis
+        // so statistics are distributed evenly across responsibility/performance/cost
+        use controlplane_common::types::Axis;
+        vec![
+            Verdict::new(
+                correlation_id, Axis::Responsibility, VerdictPath::Fast,
+                Outcome::Pass, 1.0, "Responsibility checks passed", "fast-path-summary",
+            ).with_duration(fast_path_latency_ms),
+            Verdict::new(
+                correlation_id, Axis::Performance, VerdictPath::Fast,
+                Outcome::Pass, 1.0, "Performance checks passed", "fast-path-summary",
+            ).with_duration(0),
+            Verdict::new(
+                correlation_id, Axis::Cost, VerdictPath::Fast,
+                Outcome::Pass, 1.0, "Cost checks passed", "fast-path-summary",
+            ).with_duration(0),
+        ]
     } else {
         fast_path_result.verdicts.clone()
     };
@@ -302,12 +348,28 @@ async fn run_fast_path_safe(
     output_tokens: Option<i32>,
     request_body: &[u8],
     call_id: Uuid,
+    app_max_tokens: Option<i32>,
 ) -> FastPathSafeResult {
     let body_str = String::from_utf8_lossy(response_body);
+    // Hash only the user message content + session_id so retry detection works
+    // (identical messages in the same session produce the same key)
     let session_key = {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        request_body.hash(&mut hasher);
+        if let Ok(body) = serde_json::from_slice::<serde_json::Value>(request_body) {
+            if let Some(sid) = body.get("session_id").and_then(|v| v.as_str()) {
+                sid.hash(&mut hasher);
+            }
+            if let Some(messages) = body.get("messages").and_then(|v| v.as_array()) {
+                if let Some(last_msg) = messages.last() {
+                    if let Some(content) = last_msg.get("content").and_then(|c| c.as_str()) {
+                        content.hash(&mut hasher);
+                    }
+                }
+            }
+        } else {
+            request_body.hash(&mut hasher);
+        }
         Some(hasher.finish())
     };
 
@@ -316,7 +378,7 @@ async fn run_fast_path_safe(
         tokio::task::spawn_blocking({
             let engine = engine.clone();
             let body = body_str.to_string();
-            move || engine.evaluate_with_context(&body, output_tokens, session_key)
+            move || engine.evaluate_with_app_context(&body, output_tokens, session_key, app_max_tokens)
         }),
     )
     .await;
@@ -419,6 +481,56 @@ fn extract_session_id(request_body: &[u8], headers: &axum::http::HeaderMap) -> O
                     uuid_bytes[8] = (uuid_bytes[8] & 0x3F) | 0x80; // variant
                     return Some(Uuid::from_bytes(uuid_bytes));
                 }
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract profile_id (0-5) from request body for regulatory profile selection.
+/// Only meaningful for Agent-Internal (App1).
+fn extract_profile_id(request_body: &[u8]) -> Option<u8> {
+    if let Ok(body) = serde_json::from_slice::<serde_json::Value>(request_body) {
+        if let Some(pid) = body.get("profile_id").and_then(|v| v.as_u64()) {
+            if pid <= 5 {
+                return Some(pid as u8);
+            }
+        }
+    }
+    None
+}
+
+/// Map profile_id (0-5) to the database profile name.
+fn profile_id_to_name(id: u8) -> &'static str {
+    match id {
+        0 => "us-financial",
+        1 => "eu-financial",
+        2 => "us-healthcare",
+        3 => "india-general",
+        4 => "eu-general",
+        5 => "global-internal",
+        _ => "eu-financial", // fallback to default
+    }
+}
+
+/// Extract app_id from the request.
+/// Checks: 1) explicit "app_id" in request body, 2) X-App-Id header.
+fn extract_app_id(request_body: &[u8], headers: &axum::http::HeaderMap) -> Option<Uuid> {
+    // 1. Check for explicit app_id in request body
+    if let Ok(body) = serde_json::from_slice::<serde_json::Value>(request_body) {
+        if let Some(aid) = body.get("app_id").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = Uuid::parse_str(aid) {
+                return Some(parsed);
+            }
+        }
+    }
+
+    // 2. Check X-App-Id header
+    if let Some(header_val) = headers.get("x-app-id") {
+        if let Ok(s) = header_val.to_str() {
+            if let Ok(parsed) = Uuid::parse_str(s) {
+                return Some(parsed);
             }
         }
     }
