@@ -1,0 +1,7 @@
+         metric          | value 
+-------------------------+-------
+ laya-* verdicts         | 41
+ laya-* with duration_ms | 11
+ distinct laya detectors | 6
+(3 rows)
+

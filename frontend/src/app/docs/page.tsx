@@ -2,10 +2,15 @@
 
 import { useState } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
+import { BRAND } from "@/lib/brand";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+// Proxy endpoint used in the curl examples. Defaults to the branded, port-free
+// local name (see frontend/README.md) so the docs never advertise a bare
+// `localhost` URL. The nginx proxy serving that name routes /v1/ to :8900.
+const PROXY_BASE = process.env.NEXT_PUBLIC_PROXY_URL || "http://controlplane-ai.rtxcore";
 
 interface EndpointGroup {
   title: string;
@@ -332,7 +337,7 @@ export default function DocsPage() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">API Documentation</h2>
           <p className="text-muted-foreground">
-            REST API reference for ControlPlane.ai. Base URL:{" "}
+            REST API reference for {BRAND.full}. Base URL:{" "}
             <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{API_BASE}</code>
           </p>
         </div>
@@ -352,9 +357,9 @@ export default function DocsPage() {
             </p>
             <div className="bg-muted/50 rounded-md p-3 font-mono text-xs">
               <p className="text-muted-foreground"># Using API key</p>
-              <p>curl -H &quot;X-API-Key: cp_your_key_here&quot; http://localhost:8900/v1/messages ...</p>
+              <p>curl -H &quot;X-API-Key: cp_your_key_here&quot; {PROXY_BASE}/v1/messages ...</p>
               <p className="mt-2 text-muted-foreground"># Using Bearer token</p>
-              <p>curl -H &quot;Authorization: Bearer cp_your_key_here&quot; http://localhost:8900/v1/messages ...</p>
+              <p>curl -H &quot;Authorization: Bearer cp_your_key_here&quot; {PROXY_BASE}/v1/messages ...</p>
             </div>
           </CardContent>
         </Card>

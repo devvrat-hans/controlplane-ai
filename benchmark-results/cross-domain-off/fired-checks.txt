@@ -1,0 +1,10 @@
+     check_name     | count 
+--------------------+-------
+ prompt_injection   |     6
+ secret_detection   |     4
+ tool_use_detection |     4
+ unsafe_content     |     4
+ retry_detection    |     1
+ verbosity          |     1
+(6 rows)
+

@@ -12,6 +12,7 @@ members = [
     "services/escalation",
     "services/dashboard-api",
     "services/notification",
+    "services/mcp-server",
     "services/gateway",
 ]
 
@@ -36,6 +37,7 @@ controlplane-cost-accounting = { path = "services/cost-accounting" }
 controlplane-escalation = { path = "services/escalation" }
 controlplane-dashboard-api = { path = "services/dashboard-api" }
 controlplane-notification = { path = "services/notification" }
+controlplane-mcp-server = { path = "services/mcp-server" }
 controlplane-gateway = { path = "services/gateway" }
 
 # --- async runtime / web ---------------------------------------------------

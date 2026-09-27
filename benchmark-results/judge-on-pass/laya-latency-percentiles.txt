@@ -1,0 +1,8 @@
+           check_name           | n | p50_ms | p95_ms | p99_ms 
+--------------------------------+---+--------+--------+--------
+ laya-prompt-injection          | 1 |   3875 |   3875 |   3875
+ laya-prompt-injection-evidence | 1 |    781 |    781 |    781
+ laya-semantic-pii-evidence     | 1 |   4812 |   4812 |   4812
+ laya-tool-use                  | 8 |   1256 |   4939 |   4950
+(4 rows)
+

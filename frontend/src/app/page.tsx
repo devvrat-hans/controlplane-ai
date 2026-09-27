@@ -175,8 +175,7 @@ export default function OverviewPage() {
         {statsError && (
           <div className="rounded-md border border-destructive/50 bg-destructive/5 p-4">
             <p className="text-sm text-destructive">
-              Failed to load stats. Is the dashboard API running at{" "}
-              <code className="text-xs">localhost:8080</code>?
+              Failed to load stats. Is the dashboard API running?
             </p>
           </div>
         )}

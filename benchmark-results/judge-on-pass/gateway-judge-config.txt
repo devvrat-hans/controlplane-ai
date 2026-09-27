@@ -1,0 +1,4 @@
+"decision_judge":"laya"
+"decision_judge_configured":true
+"calibrated_detectors":0
+"fusion_enabled":false

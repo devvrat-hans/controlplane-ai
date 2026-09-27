@@ -1,0 +1,8 @@
+           metric            | value 
+-----------------------------+-------
+ laya-* verdicts             | 0
+ laya-* with duration_ms     | 0
+ distinct laya detectors     | 0
+ intercepted_calls in window | 40
+(4 rows)
+

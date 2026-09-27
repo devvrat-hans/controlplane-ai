@@ -1,0 +1,67 @@
+# Corpus census
+              t              | count 
+-----------------------------+-------
+ verdicts                    |  1138
+ intercepted_calls           |  1114
+ reviewer_overrides (labels) |    25
+ detector_calibration        |    16
+ calibrated=TRUE (fusion on) |     0
+ judge_verdicts (laya-*)     |     0
+(6 rows)
+
+
+## Label composition (ground truth)
+ reviewer_action | count 
+-----------------+-------
+ confirm         |     6
+ dismiss         |     6
+ override        |    13
+(3 rows)
+
+      axis      | count 
+----------------+-------
+ performance    |    10
+ responsibility |    15
+(2 rows)
+
+
+## Detector census (what actually fires)
+      axis      |       check_name       | outcome  | count 
+----------------+------------------------+----------+-------
+ responsibility | secret_detection       | edit     |   266
+ responsibility | unsafe_content         | block    |   207
+ cost           | cost_cap               | pass     |    96
+ responsibility | fast-path-summary      | pass     |    73
+ performance    | secret_detection       | pass     |    63
+ performance    | groundedness           | pass     |    56
+ responsibility | verbosity_check        | pass     |    56
+ cost           | token_budget           | pass     |    56
+ responsibility | secret_detection       | pass     |    22
+ responsibility | semantic_pii_risk      | escalate |    19
+ performance    | input_bias             | escalate |    19
+ performance    | verbosity_analysis     | escalate |    19
+ responsibility | groundedness_check     | escalate |    19
+ responsibility | prompt_injection       | escalate |    17
+ responsibility | deepeval-hallucination | escalate |    16
+ performance    | llm-guard-toxicity     | escalate |    16
+ cost           | verbosity_check        | pass     |    15
+ responsibility | groundedness           | pass     |    15
+ performance    | token_budget           | pass     |    15
+ performance    | bias_classification    | escalate |    11
+ cost           | fast-path-summary      | pass     |    10
+ performance    | fast-path-summary      | pass     |    10
+ cost           | cost_cap               | block    |     6
+ responsibility | pii_detection          | edit     |     5
+ performance    | groundedness           | escalate |     4
+ responsibility | pii_detection          | escalate |     4
+ responsibility | bias_classifier        | escalate |     4
+ performance    | groundedness_check     | escalate |     3
+ responsibility | bias_classification    | escalate |     3
+ performance    | semantic_pii_risk      | escalate |     3
+ responsibility | input_bias             | escalate |     3
+ responsibility | verbosity_analysis     | escalate |     3
+ responsibility | prompt_injection       | block    |     2
+ performance    | verbosity              | escalate |     1
+ responsibility | retry_detection        | block    |     1
+(35 rows)
+

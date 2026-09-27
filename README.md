@@ -35,6 +35,23 @@ docker-compose up --build
 open http://localhost:3000
 ```
 
+**Branded local URL (no `localhost:3000` in the address bar):**
+
+```bash
+./scripts/setup_local_url.sh hosts controlplane-ai.rtxcore   # one sudo, once
+open http://controlplane-ai.rtxcore
+```
+
+That works after `docker compose up --build` plus that **one-time hosts alias**. The
+compose file starts an nginx container publishing port 80, but the branded name is
+outside the reserved `*.localhost` TLD (RFC 6761), so it does not resolve by
+itself.
+
+The proxy forwards `/` to the dashboard, `/api/` to the dashboard API, and `/v1/`
+to the governance proxy, so it's loopback-only by construction. Run
+`./scripts/setup_local_url.sh verify` to check every route. See
+[Section 5a](#5a-branded-local-url-nginx).
+
 **Local setup (requires Rust, Node, PostgreSQL, Ollama):**
 
 See [Section 4 — Run locally](#4-run-locally) for the Three-Terminal Manual Start.
@@ -212,6 +229,7 @@ pnpm dev
 | Reverse Proxy | 8900  | [http://localhost:8900](http://localhost:8900)               |
 | Dashboard API | 8080  | [http://localhost:8080](http://localhost:8080)               |
 | Frontend      | 3000  | [http://localhost:3000](http://localhost:3000)               |
+| MCP server    | 8090  | [http://localhost:8090/health](http://localhost:8090/health) |
 | Ollama        | 11434 | [http://localhost:11434](http://localhost:11434)             |
 | PostgreSQL    | 5432  | `postgres://controlplane:secret@localhost:5432/controlplane` |
 
@@ -220,7 +238,7 @@ pnpm dev
 
 ## 5. Run with Docker
 
-Docker Compose brings up the entire stack (PostgreSQL, Ollama, Gateway, Guardrails sidecar, Frontend) with a single command.
+Docker Compose brings up the entire stack (PostgreSQL, Ollama, Gateway, Guardrails sidecar, MCP server, Frontend) with a single command.
 
 ### Prerequisites
 
@@ -500,10 +518,90 @@ source ~/.zshrc
 | Proxy         | controlplane-gateway    | 8900  | [http://localhost:8900](http://localhost:8900)   |
 | Dashboard API | controlplane-gateway    | 8080  | [http://localhost:8080](http://localhost:8080)   |
 | Frontend      | controlplane-frontend   | 3000  | [http://localhost:3000](http://localhost:3000)   |
+| MCP server    | controlplane-mcp        | 8090  | [http://localhost:8090/health](http://localhost:8090/health) |
 | Ollama        | controlplane-ollama     | 11434 | [http://localhost:11434](http://localhost:11434) |
 | PostgreSQL    | controlplane-postgres   | 5432  | localhost:5432                                   |
 | Guardrails    | controlplane-guardrails | 8200  | [http://localhost:8200](http://localhost:8200)   |
 
+
+### 5a. Branded Local URL (nginx)
+
+The dashboard is served at **http://controlplane-ai.rtxcore** — branded,
+port-free, and loopback-only. Because the name sits outside the reserved
+`*.localhost` TLD, it needs a **one-time `/etc/hosts` alias** (one `sudo`, ever):
+
+```bash
+docker compose up --build                                 # or: docker-compose up --build
+./scripts/setup_local_url.sh hosts controlplane-ai.rtxcore # one sudo, once
+open http://controlplane-ai.rtxcore
+```
+
+How it works:
+
+1. The `nginx` service in `docker-compose.yml` publishes host port **80**, so the
+   address bar shows no port. It uses the self-contained config in
+   `infra/nginx/docker.conf` and deliberately does **not** load the Homebrew
+   default site, which listens on `:8080` and would collide with the dashboard API.
+   Compose starts it for you — nothing extra to run.
+2. The name resolves to **127.0.0.1** via a single `/etc/hosts` line —
+   `127.0.0.1 controlplane-ai.rtxcore`. It cannot reach a public address by
+   construction, and traffic never leaves the machine. Verified on macOS,
+   including through Colima, which forwards container port 80 without root.
+
+The proxy fans out to the same services you already run:
+
+
+| Path      | Upstream inside compose            | What it serves                           |
+| --------- | ---------------------------------- | ---------------------------------------- |
+| `/`       | `frontend:3000`                    | Next.js dashboard                        |
+| `/api/`   | `gateway:8080`                     | Dashboard API — REST + SSE verdict stream |
+| `/health` | `gateway:8080`                     | Gateway health probe                     |
+| `/v1/`    | `gateway:8900`                     | Governance proxy (`/v1/messages`, …)     |
+
+The same routes are useful on the command line — no `localhost` needed anywhere:
+
+```bash
+curl -s http://controlplane-ai.rtxcore/health
+curl -s -X POST http://controlplane-ai.rtxcore/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen2.5:1.5b","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":100}'
+
+./scripts/setup_local_url.sh verify    # checks all five routes at once
+./scripts/setup_local_url.sh status    # who owns :80 right now?
+```
+
+Logs: `docker compose logs -f nginx`.
+
+**Going fully `localhost`-free (optional).** The address bar is branded either
+way; the app's own API calls still default to `http://localhost:8080`. To make
+every request same-origin, set in `.env` (both work because nginx routes
+`/api/` and `/v1/`):
+
+```env
+NEXT_PUBLIC_API_URL=http://controlplane-ai.rtxcore
+NEXT_PUBLIC_PROXY_URL=http://controlplane-ai.rtxcore
+```
+
+Then rebuild the frontend once: `docker compose up --build frontend`. The
+defaults are intentionally left on `localhost` so the dashboard keeps working on
+`http://localhost:3000` even if the proxy is down.
+
+**Custom name.** Any name works — nginx is the `default_server`, so it answers on
+whatever host resolves to loopback. A name outside `*.localhost` needs a one-time
+alias (this includes the default branded name):
+
+```bash
+./scripts/setup_local_url.sh hosts rtxcore.internal
+./scripts/setup_local_url.sh hosts controlplane.local   # mDNS-served .local
+```
+
+**Three-terminal mode (no Docker).** Ports 3000/8080/8900 are on the host, so run
+the host-side proxy instead — `infra/nginx/nginx.conf` proxies `127.0.0.1`:
+
+```bash
+./scripts/setup_local_url.sh start-host   # needs sudo: binds :80 on the host
+./scripts/setup_local_url.sh stop-host
+```
 
 ---
 
@@ -854,8 +952,8 @@ The architecture is designed so that the proxy never blocks on downstream servic
 | `audit`           | Hash-chained append-only audit log                          | Implemented |
 | `cost-accounting` | Token tracking + anomaly detection                          | Implemented |
 | `escalation`      | Human review queue                                          | Implemented |
-| `dashboard-api`   | BFF: REST + SSE for frontend                                | Implemented |
-| `notification`    | Alert delivery: Slack/webhook on block/escalate             | Implemented |
+| `dashboard-api`   | BFF: REST + SSE for frontend                                | Implemented || `notification`    | Alert delivery: Slack/webhook on block/escalate            | Implemented |
+| `mcp-server`      | MCP server: typed tools + resources for external agents     | Implemented |
 | `guardrails`      | Python sidecar: Presidio, LLM Guard, DeepEval (not a Rust crate) | Implemented |
 | `gateway`         | Binary entrypoint (starts everything)                       | Implemented |
 
@@ -865,7 +963,7 @@ The architecture is designed so that the proxy never blocks on downstream servic
 ## 13. Repository Structure
 
 ```text
-services/              Rust workspace (12 crates) + Python guardrails sidecar
+services/              Rust workspace (13 crates) + Python guardrails sidecar
   common/              Domain models, provider abstractions
   platform/            Config, database pool, event bus
   proxy/               Reverse proxy (port 8900)
@@ -877,6 +975,7 @@ services/              Rust workspace (12 crates) + Python guardrails sidecar
   escalation/          Human review queue
   dashboard-api/       REST + SSE backend (port 8080)
   notification/        Slack/webhook alert delivery
+  mcp-server/          MCP server (tools + resources for external agents)
   gateway/             Binary entrypoint
   guardrails/          Python sidecar (Presidio + LLM Guard)
 frontend/              Next.js dashboard (port 3000)

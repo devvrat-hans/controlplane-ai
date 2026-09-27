@@ -21,6 +21,7 @@ import {
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select } from "@/components/ui/select";
 import { fetchApi } from "@/lib/api";
 import { useApp } from "@/components/providers/app-provider";
 
@@ -406,27 +407,29 @@ export default function AnalyticsPage() {
                 placeholder="Search checks, reasons, apps..."
                 className="h-8 w-64 rounded-md border border-input bg-background px-3 text-xs focus:outline-none focus:ring-2 focus:ring-ring/20"
               />
-              <select
+              <Select
+                ariaLabel="Filter by axis"
                 value={selectedAxis}
-                onChange={(e) => setSelectedAxis(e.target.value)}
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring/20"
-              >
-                <option value="all">All Axes</option>
-                <option value="performance">Performance</option>
-                <option value="cost">Cost</option>
-                <option value="responsibility">Responsibility</option>
-              </select>
-              <select
+                onValueChange={setSelectedAxis}
+                options={[
+                  { value: "all", label: "All Axes" },
+                  { value: "performance", label: "Performance" },
+                  { value: "cost", label: "Cost" },
+                  { value: "responsibility", label: "Responsibility" },
+                ]}
+              />
+              <Select
+                ariaLabel="Filter by outcome"
                 value={selectedOutcome}
-                onChange={(e) => setSelectedOutcome(e.target.value)}
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring/20"
-              >
-                <option value="all">All Outcomes</option>
-                <option value="pass">Pass</option>
-                <option value="edit">Edit</option>
-                <option value="block">Block</option>
-                <option value="escalate">Escalate</option>
-              </select>
+                onValueChange={setSelectedOutcome}
+                options={[
+                  { value: "all", label: "All Outcomes" },
+                  { value: "pass", label: "Pass" },
+                  { value: "edit", label: "Edit" },
+                  { value: "block", label: "Block" },
+                  { value: "escalate", label: "Escalate" },
+                ]}
+              />
               <div className="ml-auto text-xs text-muted-foreground">
                 {filteredVerdicts.length} of {totalVerdicts} verdicts in {timeRange}
               </div>

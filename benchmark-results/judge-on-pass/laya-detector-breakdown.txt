@@ -1,0 +1,12 @@
+           check_name           | outcome  | n  | min_ms | avg_ms | max_ms 
+--------------------------------+----------+----+--------+--------+--------
+ laya-prompt-injection          | edit     |  5 |   3875 |   3875 |   3875
+ laya-prompt-injection          | escalate |  2 |        |        |       
+ laya-prompt-injection-evidence | pass     |  3 |    781 |    781 |    781
+ laya-semantic-pii              | edit     |  2 |        |        |       
+ laya-semantic-pii-evidence     | pass     |  1 |   4812 |   4812 |   4812
+ laya-tool-use                  | edit     | 16 |    702 |   1715 |   4914
+ laya-tool-use                  | escalate | 10 |   1088 |   3564 |   4953
+ laya-verbosity                 | edit     |  2 |        |        |       
+(8 rows)
+

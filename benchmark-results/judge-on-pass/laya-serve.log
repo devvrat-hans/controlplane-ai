@@ -1,0 +1,42 @@
+Fetching 5 files:   0%|          | 0/5 [00:00<?, ?it/s]Fetching 5 files: 100%|██████████| 5/5 [00:00<00:00, 2145.86it/s]
+/Users/devvrathans/controlplane-ai/services/laya/.venv/lib/python3.11/site-packages/laya/router.py:260: RuntimeWarning: laya: this checkpoint ships invalid temperatures or values outside [0.5, 5]; using choice:11+=0.10058280825614929 -> 0.5. Treat confidence from the affected entries as uncalibrated.
+  agent = Agent(repo, device=self.device, token=self.token, subfolder=sub)
+Fetching 5 files:   0%|          | 0/5 [00:00<?, ?it/s]Fetching 5 files: 100%|██████████| 5/5 [00:00<00:00, 1844.46it/s]
+Fetching 5 files:   0%|          | 0/5 [00:00<?, ?it/s]Fetching 5 files: 100%|██████████| 5/5 [00:00<00:00, 1947.94it/s]
+INFO:     Started server process [51898]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:56293 - "POST /v1/systemone HTTP/1.1" 400 Bad Request
+INFO:     127.0.0.1:56304 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56316 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56326 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56336 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56346 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56356 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56368 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56378 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56388 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56398 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56408 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56418 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56428 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56438 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56448 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56458 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56468 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56478 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56488 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56498 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56508 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56518 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56528 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56538 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56548 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56558 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56568 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56578 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56588 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56609 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56619 - "POST /v1/systemone HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56629 - "POST /v1/systemone HTTP/1.1" 200 OK
