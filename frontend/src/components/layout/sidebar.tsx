@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { BRAND } from "@/lib/brand";
+import { BrandMark } from "./brand-mark";
 
 const navigation = [
   { name: "Overview", href: "/", icon: LayoutDashboardIcon },
@@ -25,13 +27,14 @@ export function Sidebar() {
       {/* Brand */}
       <div className="flex h-14 items-center px-4 border-b border-border">
         <Link href="/" className="flex items-center gap-2.5">
-          <div className="h-6 w-6 rounded-md bg-primary flex items-center justify-center">
-            <span className="text-[9px] font-bold text-primary-foreground tracking-tight">
-              CP
+          <BrandMark />
+          <span className="flex flex-col">
+            <span className="text-[13px] font-semibold leading-none tracking-tight-brand">
+              {BRAND.product}
             </span>
-          </div>
-          <span className="text-[13px] font-semibold tracking-tight-brand">
-            ControlPlane
+            <span className="mt-1 text-[8px] font-mono uppercase leading-none tracking-[0.14em] text-muted-foreground">
+              {BRAND.vendorShort}
+            </span>
           </span>
         </Link>
       </div>
@@ -76,7 +79,10 @@ export function Sidebar() {
           </span>
         </div>
         <p className="mt-1 text-[10px] text-muted-foreground/60 font-mono">
-          v0.7.0
+          {BRAND.version}
+        </p>
+        <p className="mt-2 text-[9px] text-muted-foreground/40 font-mono uppercase tracking-[0.12em]">
+          {BRAND.full}
         </p>
         <p className="mt-2 text-[9px] text-muted-foreground/40">
           Press <kbd className="px-1 py-0.5 rounded border border-border/50 bg-muted/50 font-mono text-[8px]">?</kbd> for shortcuts
@@ -106,13 +112,14 @@ export function MobileSidebar({
       <aside className="fixed inset-y-0 left-0 w-[220px] flex flex-col bg-card border-r border-border shadow-vl5 animate-in slide-in-from-left duration-200">
         <div className="flex h-14 items-center justify-between border-b border-border px-4">
           <Link href="/" className="flex items-center gap-2.5" onClick={onClose}>
-            <div className="h-6 w-6 rounded-md bg-primary flex items-center justify-center">
-              <span className="text-[9px] font-bold text-primary-foreground tracking-tight">
-                CP
+            <BrandMark />
+            <span className="flex flex-col">
+              <span className="text-[13px] font-semibold leading-none tracking-tight-brand">
+                {BRAND.product}
               </span>
-            </div>
-            <span className="text-[13px] font-semibold tracking-tight-brand">
-              ControlPlane
+              <span className="mt-1 text-[8px] font-mono uppercase leading-none tracking-[0.14em] text-muted-foreground">
+                {BRAND.vendorShort}
+              </span>
             </span>
           </Link>
           <button
@@ -153,6 +160,15 @@ export function MobileSidebar({
             );
           })}
         </nav>
+
+        <div className="border-t border-border px-4 py-3">
+          <p className="text-[9px] text-muted-foreground/40 font-mono uppercase tracking-[0.12em]">
+            {BRAND.full}
+          </p>
+          <p className="mt-1 text-[10px] text-muted-foreground/60 font-mono">
+            {BRAND.version}
+          </p>
+        </div>
       </aside>
     </div>
   );

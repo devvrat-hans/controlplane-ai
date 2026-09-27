@@ -1,0 +1,2 @@
+WORKSPACE TESTS (DATABASE_URL set): passed=513 failed=1 ignored=0
+cargo test exit code: 101

@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Select } from "@/components/ui/select";
 import { useApp } from "@/components/providers/app-provider";
+import { BrandLockup } from "./brand-mark";
 
 interface UserInfo {
   email: string;
@@ -101,6 +102,9 @@ export function Header() {
         >
           <MenuIcon className="h-5 w-5" />
         </button>
+
+        {/* Vendor lockup — the sidebar is hidden below lg, so brand the top bar too */}
+        <BrandLockup className="lg:hidden" />
 
         {/* App selector — only shown on pages that support app filtering */}
         {showAppSelector && (

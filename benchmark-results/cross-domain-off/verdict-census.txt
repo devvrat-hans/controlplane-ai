@@ -1,0 +1,10 @@
+  path  | outcome  | count 
+--------+----------+-------
+ fast   | block    |     4
+ fast   | edit     |     4
+ fast   | escalate |     5
+ fast   | pass     |    57
+ shadow | block    |     3
+ shadow | escalate |     4
+(6 rows)
+

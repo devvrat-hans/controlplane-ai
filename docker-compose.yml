@@ -1,7 +1,13 @@
 # Full-stack docker-compose for ControlPlane.ai
 #
 # Pipeline: Client → ControlPlane Proxy → Ollama (qwen2.5:1.5b) → ControlPlane governance → Client
-# After startup, open http://localhost:3000 for the dashboard.
+# After startup, open the dashboard at either:
+#   http://controlplane-ai.rtxcore             branded, port-free. Outside the
+#                                              reserved *.localhost TLD, so it
+#                                              needs a one-time hosts alias:
+#                                              ./scripts/setup_local_url.sh hosts
+#                                                controlplane-ai.rtxcore
+#   http://localhost:3000                      direct, unchanged default
 #
 # Usage:
 #   CPU only:  docker compose up --build
@@ -137,22 +143,81 @@ services:
       ollama:
         condition: service_healthy
 
+  # --- MCP server (Model Context Protocol gateway for external agents) ---
+  # Not on the request path: agents talk to it, and dashboard/proxy traffic is
+  # unaffected if it is down. It re-implements no governance logic — every tool
+  # maps onto a gateway endpoint. Only a bearer token is required to call it,
+  # see MCP_AUTH_TOKENS in .env.example.
+  mcp-server:
+    build:
+      context: .
+      dockerfile: services/mcp-server/Dockerfile
+    container_name: controlplane-mcp
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HTTP_ADDR: 0.0.0.0:8090
+      # Container-internal service names, not localhost.
+      CONTROLPLANE_API_URL: http://gateway:8080
+      CONTROLPLANE_PROXY_URL: http://gateway:8900
+      CONTROLPLANE_GUARDRAILS_URL: http://guardrails:8200
+      # The guardrails sidecar is internal-only; scans stay off by default.
+      MCP_ENABLE_INTERNAL_SCANS: ${MCP_ENABLE_INTERNAL_SCANS:-false}
+      MCP_AUTH_TOKENS: ${MCP_AUTH_TOKENS:-dev-admin:admin,dev-reviewer:reviewer,dev-viewer:viewer}
+      CONTROLPLANE_PROXY_API_KEY: ${CONTROLPLANE_PROXY_API_KEY:-}
+      MCP_ALLOW_ANONYMOUS: ${MCP_ALLOW_ANONYMOUS:-false}
+      MCP_RATE_LIMIT_PER_MIN: "120"
+      MCP_RATE_LIMIT_BURST: "30"
+      MCP_REQUEST_TIMEOUT_MS: "15000"
+      RUST_LOG: controlplane_mcp_server=info
+    ports:
+      - "8090:8090"
+    depends_on:
+      gateway:
+        condition: service_started
+
   # --- Next.js Frontend ---
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8080
+        # Override in .env to serve the dashboard same-origin through the nginx
+        # proxy below, e.g.
+        #   NEXT_PUBLIC_API_URL=http://controlplane-ai.rtxcore
+        # and then no localhost appears in any network call. Defaults keep the
+        # direct URLs so `http://localhost:3000` works even if the proxy is down.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+        NEXT_PUBLIC_PROXY_URL: ${NEXT_PUBLIC_PROXY_URL:-http://localhost:8900}
         # Override to use a faster npm mirror when registry.npmjs.org is slow:
         #   NPM_REGISTRY=https://registry.npmmirror.com docker compose up --build
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
     container_name: controlplane-frontend
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8080
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+      NEXT_PUBLIC_PROXY_URL: ${NEXT_PUBLIC_PROXY_URL:-http://localhost:8900}
     ports:
       - "3000:3000"
     depends_on:
+      - gateway
+
+  # --- nginx reverse proxy: the branded, port-free local URL ---
+  # Publishes :80 on the host, so the browser shows
+  # http://controlplane-ai.rtxcore instead of localhost:3000.
+  # Routes / → frontend, /api/ + /health → gateway dashboard
+  # API (REST + SSE, unbuffered), /v1/ → governance proxy. Config lives in
+  # infra/nginx/docker.conf. Loopback-only: Docker publishes :80 on this
+  # machine and nothing is forwarded off-box. No host nginx and no sudo —
+  # if port 80 is already taken, this one container fails to start and every
+  # other service is unaffected.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: controlplane-nginx
+    volumes:
+      - ./infra/nginx/docker.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - frontend
       - gateway
 
 volumes:

@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select } from "@/components/ui/select";
 import { fetchApi } from "@/lib/api";
 import { useUser, canResolveEscalations } from "@/lib/auth";
 
@@ -228,15 +229,12 @@ export default function EscalationsPage() {
                 <div className="flex items-center gap-3">
                   <span className="flex items-center gap-1.5">
                     Per page:
-                    <select
-                      value={pageSize}
-                      onChange={(e) => { setPageSize(Number(e.target.value)); setOffset(0); }}
-                      className="rounded border border-border bg-background px-1.5 py-0.5 text-xs"
-                    >
-                      {PAGE_SIZE_OPTIONS.map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
+                    <Select
+                      ariaLabel="Rows per page"
+                      value={String(pageSize)}
+                      onValueChange={(v) => { setPageSize(Number(v)); setOffset(0); }}
+                      options={PAGE_SIZE_OPTIONS.map((s) => ({ value: String(s), label: String(s) }))}
+                    />
                   </span>
                   <div className="flex gap-1">
                     <button

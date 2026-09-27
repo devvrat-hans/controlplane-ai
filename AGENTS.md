@@ -127,6 +127,25 @@ and forbidden actions.
 - **Forbidden**: Business logic (delegates to decision/audit/cost/escalation
   services), direct database writes
 
+### `mcp-server` — Agent Protocol Gateway
+
+- **Owns**: The Model Context Protocol surface — tool/resource catalogue, JSON-RPC
+  framing, and the stdio + Streamable HTTP transports that expose governance data
+  and reviewer actions to external agents
+- **Inputs**: MCP JSON-RPC messages over stdio or HTTP, bearer tokens
+- **Outputs**: Tool results and read-only resources sourced from the dashboard API
+  and the proxy, sanitized MCP errors, health/readiness responses
+- **Allowed**: Authenticate and authorize callers (capability + optional app scope),
+  enforce rate limits, timeouts and payload bounds, redact sensitive data, call the
+  dashboard API and proxy, propagate correlation IDs
+- **Forbidden**: Duplicating governance logic, touching the database directly, exposing
+  internal-only services (guardrails sidecar, Laya/Jev judge) by default, sitting on the
+  synchronous request path, returning unsanitized upstream errors or payloads
+- **Failure mode**: Fail closed on authentication and capacity; a failure here must never
+  affect proxy or dashboard traffic
+
+---
+
 ### `notification` — Alert Delivery
 
 - **Owns**: Sending alerts on actionable events (block, escalate)

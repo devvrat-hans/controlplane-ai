@@ -532,6 +532,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "controlplane-mcp-server"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "controlplane-common",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "controlplane-notification"
 version = "0.7.0"
 dependencies = [

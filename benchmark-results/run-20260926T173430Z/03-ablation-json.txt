@@ -1,0 +1,12 @@
+  * Small N means noise. Treat a difference of a few points as inconclusive.
+
+{
+  "days": 3650,
+  "threshold": 0.70,
+  "disagreement_delta": 0.40,
+  "comparable_pairs": 0,
+  "disagreements": 0,
+  "fitted_detectors": 0,
+  "judge_latency_p50_ms": 0,
+  "judge_latency_p99_ms": 0
+}

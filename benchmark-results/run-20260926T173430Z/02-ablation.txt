@@ -1,0 +1,44 @@
+
+=== Hybrid accuracy ablation ===
+Corpus:     reviewer_overrides (confirm = positive) joined to verdicts
+Window:     last 3650 day(s)
+Axis:       all
+Threshold:  0.70 (a confidence at/above this is a positive prediction)
+=================================
+AXIS           CONFIG                  N   PREC    REC     F1  FP_RATE    BRIER     ECE     TP/FP
+performance    fused                  10  0.250  0.500  0.333    0.375    0.452   0.537       1/3
+performance    fused+calibrated       10  0.250  0.500  0.333    0.375    0.452   0.537       1/3
+performance    heuristic-only         10  0.333  0.500  0.400    0.250    0.350   0.447       1/2
+performance    judge-only             10  0.000  0.000  0.000    0.000    0.200   0.200       0/0
+responsibility fused                  15  0.154  0.500  0.235    1.000    0.644   0.711      2/11
+responsibility fused+calibrated       15  0.154  0.500  0.235    1.000    0.644   0.711      2/11
+responsibility heuristic-only         15  0.154  0.500  0.235    1.000    0.622   0.699      2/11
+responsibility judge-only             15  0.000  0.000  0.000    0.000    0.267   0.267       0/0
+
+--- Judge latency (shadow-path budget is <2s) ---
+  Verdicts: 0
+  p50:      0 ms
+  p99:      0 ms
+
+--- Judge / heuristic disagreements (routed to human review) ---
+  Comparable (call, axis) pairs: 0
+  Disagreements (gap >= 0.40):     0
+
+--- Calibration state ---
+  Fitted detectors: 0
+  Fit version:      0
+  Fusion:           OFF — the decision engine used its pre-fusion aggregator,
+                    so the judge probabilities in this report are RAW.
+
+How to read this (plan §5.5):
+  * A win is claimed only where 'fused' (or 'fused+calibrated') beats BOTH single-engine
+    baselines on the SAME labelled set — that is what these columns show.
+  * FP-rate is the visible pain (a clean call pushed into an action); recall is the
+    expensive pain in production. Neither is free.
+  * Every labelled pair counts, including calls where no detector fired (they are
+    true negatives). Dropping them would flatter the FP-rate.
+  * 'fused+calibrated' re-applies the currently fitted temperature to the stored
+    confidence. If the verdicts were written while a fit was already live, that column
+    double-calibrates — run --reset and recollect before comparing it.
+  * Small N means noise. Treat a difference of a few points as inconclusive.
+

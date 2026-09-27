@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { BRAND } from "@/lib/brand";
 
 const TOUR_KEY = "cp-tour-completed";
 
 const STEPS = [
   {
-    title: "Welcome to ControlPlane",
+    title: `Welcome to ${BRAND.full}`,
     body: "Your AI governance layer — intercepting, scoring, and controlling every call to upstream AI providers.",
     icon: "🛡️",
   },

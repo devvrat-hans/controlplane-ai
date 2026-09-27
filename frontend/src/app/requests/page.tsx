@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select } from "@/components/ui/select";
 import { getRequests } from "@/lib/api";
 import type { RequestListItem } from "@/lib/api";
 import { useApp } from "@/components/providers/app-provider";
@@ -61,16 +62,15 @@ export default function RequestsPage() {
               placeholder="Search app, model, id..."
               className="rounded-md border border-input bg-background px-3 py-1.5 text-xs w-48 focus:outline-none focus:ring-2 focus:ring-ring/20"
             />
-            <select
+            <Select
+              ariaLabel="Filter by model"
               value={modelFilter}
-              onChange={(e) => { setModelFilter(e.target.value); setOffset(0); }}
-              className="rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring/20"
-            >
-              <option value="all">All models</option>
-              {uniqueModels.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
+              onValueChange={(v) => { setModelFilter(v); setOffset(0); }}
+              options={[
+                { value: "all", label: "All models" },
+                ...uniqueModels.map((m) => ({ value: m, label: m })),
+              ]}
+            />
             {["all", "pass", "edit", "block", "escalate"].map((f) => (
               <button
                 key={f}
@@ -160,15 +160,12 @@ export default function RequestsPage() {
             </p>
             <div className="flex items-center gap-1.5">
               <span className="text-xs text-muted-foreground">Per page:</span>
-              <select
-                value={pageSize}
-                onChange={(e) => { setPageSize(Number(e.target.value)); setOffset(0); }}
-                className="rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring/20"
-              >
-                {PAGE_SIZE_OPTIONS.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
+              <Select
+                ariaLabel="Rows per page"
+                value={String(pageSize)}
+                onValueChange={(v) => { setPageSize(Number(v)); setOffset(0); }}
+                options={PAGE_SIZE_OPTIONS.map((s) => ({ value: String(s), label: String(s) }))}
+              />
             </div>
           </div>
           {total > pageSize && (

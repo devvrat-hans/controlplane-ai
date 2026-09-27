@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { BrandMark } from "@/components/layout/brand-mark";
+import { BRAND, brandTitle } from "@/lib/brand";
 
 const DEMO_ACCOUNTS = [
   { email: "admin@controlplane.ai", password: "admin123", role: "admin" },
@@ -13,6 +15,11 @@ const DEMO_ACCOUNTS = [
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
+
+  // This route lives outside DashboardShell, so brand its tab here.
+  useEffect(() => {
+    document.title = brandTitle("Sign in");
+  }, []);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -57,12 +64,13 @@ export default function LoginPage() {
       <div className="w-full max-w-md space-y-6">
         {/* Branding */}
         <div className="text-center">
-          <div className="mx-auto h-12 w-12 rounded-lg bg-primary flex items-center justify-center">
-            <span className="text-lg font-bold text-primary-foreground">CP</span>
-          </div>
-          <h1 className="mt-4 text-2xl font-semibold tracking-tight-brand">ControlPlane</h1>
+          <BrandMark size="lg" className="mx-auto" />
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight-brand">{BRAND.product}</h1>
+          <p className="mt-1 text-sm font-medium text-muted-foreground">
+            {BRAND.full}
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Sign in to the governance dashboard
+            Sign in to the {BRAND.short.toLowerCase()}
           </p>
         </div>
 
@@ -143,6 +151,12 @@ export default function LoginPage() {
           <p>
             <strong>Viewer</strong>: Read-only access to all pages
           </p>
+        </div>
+
+        {/* Brand footer */}
+        <div className="flex items-center justify-between border-t border-border pt-4 text-[10px] text-muted-foreground/60">
+          <span className="font-mono uppercase tracking-[0.12em]">{BRAND.copyright}</span>
+          <span className="font-mono">{BRAND.version} · local deployment</span>
         </div>
       </div>
     </div>

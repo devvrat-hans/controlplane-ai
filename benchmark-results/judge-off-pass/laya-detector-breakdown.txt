@@ -1,0 +1,4 @@
+ check_name | outcome | n | min_ms | avg_ms | max_ms 
+------------+---------+---+--------+--------+--------
+(0 rows)
+

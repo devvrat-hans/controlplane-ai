@@ -1,0 +1,20 @@
+                    so the judge probabilities in this report are RAW.
+
+How to read this (plan §5.5):
+  * A win is claimed only where 'fused' (or 'fused+calibrated') beats BOTH single-engine
+    baselines on the SAME labelled set — that is what these columns show.
+  * FP-rate is the visible pain (a clean call pushed into an action); recall is the
+    expensive pain in production. Neither is free.
+  * Every labelled pair counts, including calls where no detector fired (they are
+    true negatives). Dropping them would flatter the FP-rate.
+  * 'fused+calibrated' re-applies the currently fitted temperature to the stored
+    confidence. If the verdicts were written while a fit was already live, that column
+    double-calibrates — run --reset and recollect before comparing it.
+  * Small N means noise. Treat a difference of a few points as inconclusive.
+
+
+=== Calibration fit (dry run) ===
+Objective: minimise NLL over temperatures in [0.25, 5.0]; weight from precision.
+
+  (no labelled judge verdicts — the judge produced no actionable reading on any
+   reviewed call, so there is nothing to calibrate)

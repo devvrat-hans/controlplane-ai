@@ -1,0 +1,8 @@
+fast_path_clean_response
+                        time:   [2.3317 µs 2.3389 µs 2.3465 µs]
+fast_path_secret_detection
+                        time:   [2.1745 µs 2.1805 µs 2.1871 µs]
+fast_path_pii_detection time:   [3.0196 µs 3.0356 µs 3.0587 µs]
+fast_path_unsafe_block  time:   [158.59 ns 158.97 ns 159.38 ns]
+fast_path_4kb_response  time:   [18.927 µs 19.041 µs 19.234 µs]
+cargo bench exit code: 0

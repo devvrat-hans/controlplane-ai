@@ -1,0 +1,21 @@
+# Environment manifest — captured 2026-09-26T17:34:30Z
+
+## Host
+hardware: Apple M4 Pro
+arch: arm64
+cpus: 12
+memory_gb: 24
+os: macOS 27.0
+
+## Toolchain
+rustc: rustc 1.96.0 (ac68faa20 2026-05-25) (Homebrew)
+cargo: cargo 1.96.0 (30a34c682 2026-05-25) (Homebrew)
+psql: psql (PostgreSQL) 14.20 (Homebrew)
+
+## Source revision
+git_head: 6a105d4d52fbd415f1d8cd5f3677314a9a9e001b
+git_branch: feature/mcp-server
+workspace_version: "0.7.0"
+
+## Judge configuration in the observed corpus
+DECISION_JUDGE (local DB corpus): see judge_verdicts below

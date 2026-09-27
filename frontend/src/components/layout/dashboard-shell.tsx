@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { Sidebar, MobileSidebar } from "./sidebar";
 import { Header } from "./header";
+import { BrandMark } from "./brand-mark";
 import { OnboardingTour } from "@/components/onboarding-tour";
+import { BRAND, brandTitle, pageTitleFor } from "@/lib/brand";
 
 const SHORTCUTS = [
   { key: "1", label: "Overview", href: "/" },
@@ -20,6 +22,7 @@ const SHORTCUTS = [
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -32,6 +35,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       setAuthenticated(true);
     }
   }, [router]);
+
+  // Brand every browser tab: "Audit · RTXCore ControlPlane AI". Done once here
+  // rather than per page, because the pages are client components and cannot
+  // export their own <Metadata>.
+  useEffect(() => {
+    document.title = brandTitle(pageTitleFor(pathname));
+  }, [pathname]);
 
   // Keyboard shortcuts for quick navigation
   useEffect(() => {
@@ -62,8 +72,17 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
   if (!authenticated) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background">
+        <BrandMark size="lg" />
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+        <div className="text-center">
+          <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
+            {BRAND.full}
+          </p>
+          <p className="mt-1 text-[11px] text-muted-foreground/60">
+            Loading {BRAND.short.toLowerCase()}…
+          </p>
+        </div>
       </div>
     );
   }
@@ -77,6 +96,25 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         <div className="flex flex-1 flex-col overflow-hidden">
           <Header />
           <main className="flex-1 overflow-y-auto p-5 md:p-8">{children}</main>
+
+          {/* Brand footer — present on every dashboard page, including exports
+              and demo screenshots that crop out the sidebar. */}
+          <footer className="flex h-9 shrink-0 items-center justify-between gap-3 border-t border-border bg-card px-5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="text-[10px] font-semibold tracking-tight-brand text-muted-foreground">
+                {BRAND.full}
+              </span>
+              <span className="hidden truncate text-[10px] text-muted-foreground/50 sm:inline">
+                {BRAND.tagline}
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-3 text-[10px] text-muted-foreground/50">
+              <span className="hidden font-mono uppercase tracking-[0.12em] md:inline">
+                Local deployment
+              </span>
+              <span className="font-mono">{BRAND.version}</span>
+            </div>
+          </footer>
         </div>
       </div>
 
@@ -102,6 +140,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 <kbd className="px-2 py-0.5 rounded border border-border bg-muted text-[11px] font-mono font-medium">?</kbd>
               </div>
             </div>
+            <p className="mt-3 text-[9px] font-mono uppercase tracking-[0.14em] text-muted-foreground/40">
+              {BRAND.full}
+            </p>
           </div>
         </div>
       )}

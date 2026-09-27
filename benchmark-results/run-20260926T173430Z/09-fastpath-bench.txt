@@ -1,0 +1,60 @@
+    Finished `bench` profile [optimized] target(s) in 0.20s
+     Running benches/fast_path_bench.rs (target/release/deps/fast_path_bench-830e998581384d4b)
+Gnuplot not found, using plotters backend
+Benchmarking fast_path_clean_response
+Benchmarking fast_path_clean_response: Warming up for 1.0000 s
+Benchmarking fast_path_clean_response: Collecting 100 samples in estimated 5.0018 s (2.2M iterations)
+Benchmarking fast_path_clean_response: Analyzing
+fast_path_clean_response
+                        time:   [2.3317 µs 2.3389 µs 2.3465 µs]
+                        change: [-7.0173% -6.4002% -5.8055%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 5 outliers among 100 measurements (5.00%)
+  2 (2.00%) low mild
+  3 (3.00%) high mild
+
+Benchmarking fast_path_secret_detection
+Benchmarking fast_path_secret_detection: Warming up for 1.0000 s
+Benchmarking fast_path_secret_detection: Collecting 100 samples in estimated 5.0052 s (2.3M iterations)
+Benchmarking fast_path_secret_detection: Analyzing
+fast_path_secret_detection
+                        time:   [2.1745 µs 2.1805 µs 2.1871 µs]
+                        change: [-4.4275% -3.0432% -1.6039%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) low mild
+  2 (2.00%) high severe
+
+Benchmarking fast_path_pii_detection
+Benchmarking fast_path_pii_detection: Warming up for 1.0000 s
+Benchmarking fast_path_pii_detection: Collecting 100 samples in estimated 5.0032 s (1.6M iterations)
+Benchmarking fast_path_pii_detection: Analyzing
+fast_path_pii_detection time:   [3.0196 µs 3.0356 µs 3.0587 µs]
+                        change: [-5.0562% -4.4648% -3.8164%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) low mild
+  2 (2.00%) high severe
+
+Benchmarking fast_path_unsafe_block
+Benchmarking fast_path_unsafe_block: Warming up for 1.0000 s
+Benchmarking fast_path_unsafe_block: Collecting 100 samples in estimated 5.0005 s (32M iterations)
+Benchmarking fast_path_unsafe_block: Analyzing
+fast_path_unsafe_block  time:   [158.59 ns 158.97 ns 159.38 ns]
+                        change: [-2.6595% -2.2371% -1.8464%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) low severe
+  2 (2.00%) high mild
+
+Benchmarking fast_path_4kb_response
+Benchmarking fast_path_4kb_response: Warming up for 1.0000 s
+Benchmarking fast_path_4kb_response: Collecting 100 samples in estimated 5.0892 s (268k iterations)
+Benchmarking fast_path_4kb_response: Analyzing
+fast_path_4kb_response  time:   [18.927 µs 19.041 µs 19.234 µs]
+                        change: [-4.9763% -4.6226% -4.1856%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+

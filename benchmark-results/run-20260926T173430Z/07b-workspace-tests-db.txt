@@ -1,0 +1,796 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/debug/deps/controlplane_audit-e85aa51b1f056d3d)
+
+running 6 tests
+test chain::tests::genesis_record_hash ... ok
+test chain::tests::different_inputs_different_hash ... ok
+test chain::tests::verify_tampered_record ... ok
+test chain::tests::chain_integrity ... ok
+test chain::tests::verify_valid_record ... ok
+test chain::tests::hash_is_deterministic ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/chain_integrity_test.rs (target/debug/deps/chain_integrity_test-5f1c600484600b9f)
+
+running 7 tests
+test empty_chain_verifies ... ok
+test single_record_chain_verifies ... ok
+test chain_hashes_are_unique ... ok
+test tampered_hash_breaks_subsequent_record ... ok
+test tampered_action_is_detected ... ok
+test tampered_prev_hash_is_detected ... ok
+test chain_of_100_records_verifies_successfully ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_common-ed9c1674dcc22661)
+
+running 33 tests
+test config::tests::default_configs_are_valid ... ok
+test config::tests::model_pricing_calculation ... ok
+test error::tests::error_status_codes ... ok
+test config::tests::policy_configs_serialize_to_json ... ok
+test error::tests::api_error_serialization ... ok
+test models::tests::cost_ledger_anomaly_detection ... ok
+test models::tests::decision_from_verdicts_picks_worst ... ok
+test models::tests::escalation_case_from_verdict ... ok
+test provider_ollama::tests::test_extract_context ... ok
+test models::tests::intercepted_call_total_tokens ... ok
+test events::tests::envelope_roundtrip ... ok
+test provider_ollama::tests::test_extract_response_text ... ok
+test provider_ollama::tests::test_extract_prompt ... ok
+test provider_ollama::tests::test_extract_token_usage ... ok
+test provider_ollama::tests::test_kind ... ok
+test provider_ollama::tests::test_rewrite_path ... ok
+test provider_ollama::tests::test_rewrite_path_messages ... ok
+test provider_opencode::tests::test_extract_context ... ok
+test provider_opencode::tests::test_extract_model ... ok
+test provider_opencode::tests::test_extract_prompt ... ok
+test provider_opencode::tests::test_extract_response_text ... ok
+test provider_opencode::tests::test_extract_token_usage ... ok
+test provider_opencode::tests::test_extract_token_usage_alt_fields ... ok
+test provider_ollama::tests::test_no_auth_applied ... ok
+test provider_opencode::tests::test_kind ... ok
+test provider_opencode::tests::test_rewrite_path_generic ... ok
+test provider_opencode::tests::test_no_auth_applied ... ok
+test provider_opencode::tests::test_rewrite_path_passthrough ... ok
+test provider_opencode::tests::test_rewrite_path_with_leading_slash ... ok
+test types::tests::axis_roundtrip_serde ... ok
+test types::tests::outcome_ordering ... ok
+test types::tests::outcome_roundtrip_serde ... ok
+test types::tests::outcome_worst_picks_higher ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/provider_test.rs (target/debug/deps/provider_test-8e6dd3ec09500851)
+
+running 53 tests
+test anthropic_extract_model_missing ... ok
+test anthropic_extract_context_no_system ... ok
+test anthropic_extract_prompt_no_user_messages ... ok
+test anthropic_extract_model ... ok
+test anthropic_extract_text_fallback_top_level_text ... ok
+test anthropic_extract_context_system_field ... ok
+test anthropic_extract_context_system_role_in_messages ... ok
+test anthropic_extract_prompt_single_user_message ... ok
+test anthropic_extract_prompt_multiple_user_messages ... ok
+test anthropic_apply_auth_sets_headers ... ok
+test anthropic_extract_text_invalid_json_returns_stringified ... ok
+test anthropic_extract_text_multiple_blocks ... ok
+test anthropic_extract_text_single_block ... ok
+test anthropic_extract_text_tool_use_ignored ... ok
+test anthropic_extract_token_usage_invalid_json ... ok
+test anthropic_extract_token_usage_missing ... ok
+test anthropic_extract_token_usage_standard ... ok
+test anthropic_rewrite_path_passthrough ... ok
+test both_providers_handle_invalid_json_gracefully ... ok
+test both_providers_return_same_kind ... ok
+test create_provider_returns_anthropic ... ok
+test create_provider_returns_gemini ... ok
+test gemini_apply_auth_sets_query_param ... ok
+test gemini_extract_context_no_context ... ok
+test gemini_extract_context_system_instruction ... ok
+test gemini_extract_context_system_instruction_multiple_parts ... ok
+test gemini_extract_context_system_role_in_contents ... ok
+test gemini_extract_model_missing ... ok
+test gemini_extract_model_plain ... ok
+test gemini_extract_model_pro ... ok
+test gemini_extract_model_with_prefix ... ok
+test gemini_extract_prompt_multi_turn ... ok
+test gemini_extract_prompt_multiple_parts_per_turn ... ok
+test gemini_extract_prompt_no_user ... ok
+test gemini_extract_prompt_single_user ... ok
+test gemini_extract_text_empty_candidates ... ok
+test gemini_extract_text_fallback_top_level_text ... ok
+test gemini_extract_text_multiple_parts ... ok
+test gemini_extract_text_single_candidate ... ok
+test gemini_extract_token_usage_missing ... ok
+test gemini_extract_token_usage_standard ... ok
+test gemini_extract_token_usage_zero_tokens ... ok
+test gemini_real_chat_request ... ok
+test gemini_rewrite_path_default_model ... ok
+test gemini_real_chat_request_with_system ... ok
+test gemini_real_generate_content_response ... ok
+test gemini_rewrite_path_with_model ... ok
+test gemini_rewrite_path_pro_model ... ok
+test provider_kind_display ... ok
+test provider_kind_from_str_anthropic ... ok
+test provider_kind_from_str_gemini ... ok
+test provider_kind_from_str_invalid ... ok
+test provider_kind_serde_roundtrip ... ok
+
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_cost_accounting-f5cac77ad45e0b02)
+
+running 5 tests
+test ledger::tests::parse_window_duration_values ... ok
+test pricing::tests::compute_cost_claude_sonnet ... ok
+test pricing::tests::lookup_known_model ... ok
+test pricing::tests::lookup_unknown_falls_back ... ok
+test pricing::tests::lookup_prefix_match ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_dashboard_api-4fbb11425ccdf13f)
+
+running 1 test
+test auth::tests::generate_and_validate_token ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/api_integration_test.rs (target/debug/deps/api_integration_test-1a5827dbfbb888c8)
+
+running 10 tests
+test invalid_auth_token_rejected ... ok
+test health_endpoint_returns_ok ... ok
+test ready_endpoint_verifies_db ... ok
+test list_apps_returns_seeded_apps ... ok
+test recent_verdicts_returns_array ... ok
+test recent_verdicts_filters_by_outcome ... ok
+test list_escalations_returns_cases ... ok
+test update_policy_saves_and_returns ... FAILED
+test get_policy_for_app ... ok
+test stats_overview_returns_valid_json ... ok
+
+failures:
+
+---- update_policy_saves_and_returns stdout ----
+
+thread 'update_policy_saves_and_returns' (1226540) panicked at services/dashboard-api/tests/api_integration_test.rs:267:5:
+assertion `left == right` failed: PUT policy should succeed
+  left: 500
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    update_policy_saves_and_returns
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p controlplane-dashboard-api --test api_integration_test`
+     Running unittests src/lib.rs (target/debug/deps/controlplane_decision-91b9812a630a49bb)
+
+running 35 tests
+test aggregator::tests::a_partial_fit_never_weakens_the_detectors_it_does_not_cover ... ok
+test aggregator::tests::a_single_heuristic_detector_is_capped_at_edit ... ok
+test aggregator::tests::an_evidence_reading_uses_its_detectors_weight ... ok
+test aggregator::tests::all_pass_gives_pass ... ok
+test aggregator::tests::a_confident_calibrated_judge_acts_without_corroboration ... ok
+test aggregator::tests::block_overrides_everything ... ok
+test aggregator::tests::a_close_agreement_is_not_treated_as_disagreement ... ok
+test aggregator::tests::decision_from_verdicts ... ok
+test aggregator::tests::an_unfitted_detector_still_participates_in_disagreement ... ok
+test aggregator::tests::compound_risk_across_axes_still_escalates ... ok
+test aggregator::tests::contributing_ids_exclude_evidence_only_readings ... ok
+test aggregator::tests::disagreement_never_weakens_an_existing_block ... ok
+test aggregator::tests::empty_verdicts_pass ... ok
+test aggregator::tests::evidence_suffix_matches_the_shadow_path_convention ... ok
+test aggregator::tests::fusion_is_deterministic ... ok
+test aggregator::tests::fusion_is_off_without_fitted_weights ... ok
+test aggregator::tests::fusion_records_the_calibration_version ... ok
+test aggregator::tests::fusion_without_verdicts_is_none ... ok
+test aggregator::tests::highest_confidence_is_primary ... ok
+test aggregator::tests::judge_and_heuristic_disagreement_is_routed_to_a_human ... ok
+test aggregator::tests::one_detector_never_contributes_twice ... ok
+test aggregator::tests::readings_below_the_evidence_floor_are_discarded ... ok
+test aggregator::tests::thresholds_are_configurable_from_the_policy_store ... ok
+test aggregator::tests::two_moderate_detectors_corroborate_and_may_escalate ... ok
+test aggregator::tests::unfitted_verdicts_do_not_double_count_with_fitted_ones ... ok
+test aggregator::tests::weighted_noisy_or_combines_independent_detectors ... ok
+test aggregator::tests::worst_outcome_wins ... ok
+test feedback::tests::confirming_agreement_does_not_annotate_when_flagged ... ok
+test feedback::tests::contradicting_override_annotates ... ok
+test feedback::tests::no_precedents_gives_no_annotation ... ok
+test feedback::tests::pass_with_confirmed_history_warns ... ok
+test policy::tests::apply_threshold_bias ... ok
+test policy::tests::apply_threshold_performance ... ok
+test policy::tests::default_policy_is_sensible ... ok
+test policy::tests::policy_action_from_str ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reviewer_override_rag_test.rs (target/debug/deps/reviewer_override_rag_test-93bee0104c2b36f6)
+
+running 4 tests
+test reviewer_overrides_table_exists ... ok
+test resolve_creates_precedent_row ... ok
+test similar_content_retrieves_precedent ... ok
+test unrelated_content_does_not_retrieve_precedent ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_escalation-f668e44cb8362d33)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_fast_path-d9db45309e0ac70f)
+
+running 52 tests
+test checks::cost_cap::tests::edits_approaching_cap ... ok
+test checks::cost_cap::tests::blocks_when_over_cap ... ok
+test checks::cost_cap::tests::escalates_near_cap ... ok
+test checks::cost_cap::tests::passes_when_no_token_count ... ok
+test checks::cost_cap::tests::passes_when_well_under_cap ... ok
+test checks::cost_cap::tests::passes_when_no_cap_configured ... ok
+test checks::retry_detection::tests::allows_requests_under_threshold ... ok
+test checks::retry_detection::tests::hash_prompt_is_deterministic ... ok
+test checks::retry_detection::tests::different_keys_tracked_separately ... ok
+test checks::retry_detection::tests::detects_retry_storm ... ok
+test checks::secret_detection::tests::luhn_invalid_cards ... ok
+test checks::secret_detection::tests::luhn_valid_cards ... ok
+test checks::secret_detection::tests::shannon_entropy_values ... ok
+test checks::session_risk::tests::different_sessions_independent ... ok
+test checks::session_risk::tests::escalates_at_threshold ... ok
+test checks::session_risk::tests::no_escalation_below_threshold ... ok
+test checks::tool_use_detection::tests::detects_dangerous_action ... ok
+test checks::tool_use_detection::tests::detects_function_call_format ... ok
+test checks::tool_use_detection::tests::detects_structured_tool_calls ... ok
+test checks::tool_use_detection::tests::no_tool_use_in_normal_response ... ok
+test checks::tool_use_detection::tests::risk_multiplier_increases_confidence ... ok
+test checks::unsafe_content::tests::blocks_custom_keywords ... ok
+test checks::unsafe_content::tests::blocks_severe_content ... ok
+test checks::unsafe_content::tests::case_insensitive_matching ... ok
+test checks::unsafe_content::tests::passes_safe_content ... ok
+test engine::tests::blocks_unsafe_content ... ok
+test engine::tests::blocks_cost_cap_exceeded ... ok
+test checks::secret_detection::tests::detects_generic_api_key_with_high_entropy ... ok
+test checks::secret_detection::tests::no_false_positive_on_normal_text ... ok
+test checks::secret_detection::tests::detects_email ... ok
+test checks::secret_detection::tests::detects_aws_access_key ... ok
+test engine::tests::short_circuits_on_block ... ok
+test checks::secret_detection::tests::detects_ssn ... ok
+test checks::secret_detection::tests::produces_edits_for_findings ... ok
+test engine::tests::detects_retry_storm ... ok
+test engine::tests::detects_and_redacts_secret ... ok
+test engine::tests::worst_outcome_wins ... ok
+test policy_cache::tests::cache_is_clone_safe ... ok
+test policy_cache::tests::cache_load_returns_current_rules ... ok
+test policy_cache::tests::cache_store_atomically_updates ... ok
+test policy_cache::tests::default_rules_are_sensible ... ok
+test checks::secret_detection::tests::detects_phone_with_separators ... ok
+test policy_reload::tests::merge_cost_policy_extracts_retry_settings ... ok
+test policy_reload::tests::merge_disables_pii_if_off ... ok
+test policy_reload::tests::merge_empty_gives_defaults ... ok
+test policy_reload::tests::merge_multiple_cost_policies_no_global_cap ... ok
+test engine::tests::passes_clean_response ... ok
+test checks::secret_detection::tests::detects_credit_card_with_luhn ... ok
+test policy_reload::tests::merge_responsibility_policy_extracts_keywords ... ok
+test checks::secret_detection::tests::rejects_invalid_credit_card ... ok
+test engine::tests::completes_within_budget ... ok
+test checks::secret_detection::tests::no_false_positive_on_unix_timestamps ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/contract_no_judge_in_fast_path.rs (target/debug/deps/contract_no_judge_in_fast_path-fb5dae7530b21f6d)
+
+running 3 tests
+test the_fast_path_has_no_route_to_the_judge ... ok
+test the_decision_engine_consumes_verdicts_and_never_calls_the_judge ... ok
+test the_guard_detects_a_leak_when_one_exists ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/controlplane_gateway-3c7670588d6364d3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/db_integration_test.rs (target/debug/deps/db_integration_test-ab362a3061d9a3e3)
+
+running 11 tests
+test schema_tables_exist ... ok
+test audit_records_hash_chain_integrity ... ok
+test verdict_fk_rejects_invalid_call_id ... ok
+test dashboard_queries_perform_correctly ... ok
+test escalation_case_lifecycle ... ok
+test cost_entries_table_accepts_inserts ... ok
+test verdict_check_constraints_reject_invalid_values ... ok
+test policy_crud_operations ... ok
+test insert_and_query_intercepted_call ... ok
+test insert_verdict_with_fk_constraint ... ok
+test app_name_uniqueness_enforced ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/hybrid_pipeline_test.rs (target/debug/deps/hybrid_pipeline_test-f687dc95f6eb484b)
+
+running 10 tests
+test the_evidence_suffix_literal_agrees_across_the_crate_boundary ... ok
+test a_fitted_judge_does_not_down_weight_an_unfitted_heuristic ... ok
+test the_evidence_band_alone_cannot_act_through_the_fusion ... ok
+test a_mid_band_judge_verdict_edits_through_the_real_fusion ... ok
+test judge_and_heuristic_disagreement_routes_the_real_traffic_to_a_human ... ok
+test an_evidence_reading_is_attributed_to_its_own_detector_name ... ok
+test every_judge_check_name_the_client_emits_is_recognised_by_the_decision_engine ... ok
+test a_confident_judge_verdict_escalates_through_the_real_fusion ... ok
+test a_judge_verdict_can_never_block_alone ... ok
+test with_no_fit_the_decision_engine_keeps_its_previous_aggregator ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/laya_judge_contract_test.rs (target/debug/deps/laya_judge_contract_test-69895d762fcd3a94)
+
+running 23 tests
+test an_unreachable_judge_fails_open ... ok
+test a_noul_only_answer_is_not_consumed ... ok
+test an_error_status_fails_open ... ok
+test a_choice_answer_without_a_distribution_falls_back_to_its_confidence ... ok
+test answers_are_mapped_to_prefixed_verdicts_with_the_expected_axes ... ok
+test a_short_response_is_exactly_one_call_with_the_jev_request_shape ... ok
+test a_finding_only_in_the_elided_middle_is_still_caught ... ok
+test a_destructive_tool_action_escalates_while_a_low_one_stays_silent ... ok
+test a_high_reading_escalates_and_a_clean_call_says_nothing ... ok
+test a_bearer_token_is_sent_only_when_one_is_configured ... ok
+test category_answers_carry_the_family_into_the_reason ... ok
+test context_is_omitted_from_the_state_when_there_is_none ... ok
+test malformed_json_fails_open ... ok
+test question_payloads_follow_the_typed_schema ... ok
+test a_long_response_is_split_into_multiple_calls_and_discloses_it ... ok
+test the_model_override_is_sent_when_configured ... ok
+test context_questions_are_asked_only_when_a_context_exists ... ok
+test only_severe_toxicity_acts_because_the_specialist_model_owns_the_middle ... ok
+test sub_threshold_readings_are_published_as_evidence_and_never_as_action ... ok
+test max_pooling_prefers_the_riskiest_window_not_the_last_one ... ok
+test partial_window_failure_still_uses_the_windows_that_answered ... ok
+test every_window_carries_the_prompt_so_the_judge_always_sees_the_question ... ok
+test a_timeout_fails_open ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_mcp_server-265b581d8da2b420)
+
+running 59 tests
+test auth::tests::anonymous_only_when_allowed ... ok
+test auth::tests::capability_matrix ... ok
+test auth::tests::app_scope_is_enforced ... ok
+test auth::tests::rejects_unknown_role ... ok
+test auth::tests::parses_app_scope ... ok
+test auth::tests::parses_token_role_pairs ... ok
+test auth::tests::resolves_valid_token_only ... ok
+test config::tests::defaults_are_fail_closed ... ok
+test error::tests::correlation_is_attached_safely ... ok
+test config::tests::env_overrides_are_applied ... ok
+test config::tests::invalid_transport_is_rejected ... ok
+test error::tests::http_status_mapping ... ok
+test error::tests::internal_error_is_opaque ... ok
+test error::tests::upstream_body_never_leaks ... ok
+test protocol::tests::error_shape_includes_code ... ok
+test protocol::tests::rejects_wrong_jsonrpc_version ... ok
+test protocol::tests::notification_has_no_id ... ok
+test protocol::tests::success_shape ... ok
+test client::tests::query_values_are_encoded ... ok
+test client::tests::empty_query_values_are_dropped ... ok
+test protocol::tests::tool_content_hides_structured_on_error ... ok
+test redact::tests::bounds_array_length ... ok
+test ratelimit::tests::keys_are_isolated ... ok
+test ratelimit::tests::burst_then_denied ... ok
+test resources::tests::every_resource_uri_is_distinct ... ok
+test resources::tests::invalid_uuid_resource_is_rejected ... ok
+test resources::tests::templates_are_reported ... ok
+test resources::tests::unknown_resource_is_not_found ... ok
+test server::tests::initialize_requires_auth ... ok
+test server::tests::initialize_succeeds_with_token ... ok
+test server::tests::invalid_tool_params_return_tool_error ... ok
+test server::tests::notifications_have_no_response ... ok
+test server::tests::parse_error_is_reported ... ok
+test server::tests::tools_list_hides_capabilities_from_viewer ... ok
+test server::tests::unknown_method_is_reported ... ok
+test server::tests::viewer_cannot_resolve_escalation ... ok
+test tools::tests::bounded_integer_rejects_out_of_range ... ok
+test tools::tests::capability_for_unknown_is_none ... ok
+test tools::tests::every_definition_has_a_capability ... ok
+test tools::tests::profile_ids_are_validated_against_traversal ... ok
+test tools::tests::required_fields_are_declared ... ok
+test tools::tests::schemas_are_objects ... ok
+test ratelimit::tests::prune_keeps_depleted_and_drops_refilled_buckets ... ok
+test tools::tests::uuid_validation_rejects_garbage ... ok
+test transport::http::tests::api_key_header_is_extracted ... ok
+test transport::http::tests::bearer_token_is_extracted ... ok
+test transport::http::tests::missing_token_is_none ... ok
+test transport::http::tests::router_builds ... ok
+test tools::tests::system_config_whitelist_drops_unknown_and_secrets ... ok
+test redact::tests::drops_sensitive_json_keys ... ok
+test redact::tests::truncates_long_text ... ok
+test redact::tests::does_not_redact_non_luhn_digit_runs ... ok
+test redact::tests::redacts_email_and_ssn ... ok
+test redact::tests::preserves_iso_timestamps ... ok
+test redact::tests::redacts_aws_key ... ok
+test redact::tests::redacts_luhn_valid_cards ... ok
+test client::tests::response_sanitization_redacts_credentials ... ok
+test redact::tests::preserves_uuids_and_model_names ... ok
+test redact::tests::redacts_assigned_credential ... ok
+
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/debug/deps/controlplane_mcp-36286af2cf623299)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/http_transport_test.rs (target/debug/deps/http_transport_test-97969782fec1b2b9)
+
+running 6 tests
+test initialize_over_http_with_bearer_token ... ok
+test http_without_token_is_unauthorized ... ok
+test oversized_body_is_rejected ... ok
+test api_key_header_is_accepted ... ok
+test health_and_ready_endpoints ... ok
+test batch_requests_return_an_array ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mcp_contract_test.rs (target/debug/deps/mcp_contract_test-9c548bd395898197)
+
+running 10 tests
+test initialize_handshake_is_well_formed ... ok
+test invalid_tool_arguments_produce_a_tool_error ... ok
+test unknown_resource_is_a_clean_error ... ok
+test tools_catalogue_contains_the_documented_surface ... ok
+test system_config_omits_credentials ... ok
+test upstream_failure_is_sanitized ... ok
+test list_apps_succeeds ... ok
+test evaluate_prompt_returns_governance_metadata ... ok
+test resources_can_be_listed_and_read ... ok
+test get_request_redacts_secrets_pii_and_payloads ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/security_test.rs (target/debug/deps/security_test-e59f3101e2860a88)
+
+running 9 tests
+test missing_token_is_rejected_when_anonymous_disabled ... ok
+test unknown_token_is_rejected ... ok
+test internal_scanner_is_disabled_by_default ... ok
+test viewer_cannot_resolve_escalations ... ok
+test reviewer_cannot_change_policies ... ok
+test oversized_evaluate_payload_is_rejected ... ok
+test path_traversal_in_profile_id_is_rejected ... ok
+test anonymous_reads_only_when_explicitly_enabled ... ok
+test app_scoped_token_cannot_reach_other_apps ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/stdio_binary_test.rs (target/debug/deps/stdio_binary_test-0e52fa0a38c29b09)
+
+running 4 tests
+test invalid_token_exits_non_zero_without_stdout_output ... ok
+test stdio_without_credentials_fails_closed ... ok
+test malformed_line_yields_a_parse_error_and_keeps_running ... ok
+test stdout_carries_only_json_rpc_frames ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/timeout_test.rs (target/debug/deps/timeout_test-64f2f397d5cb98f3)
+
+running 2 tests
+test cancel_during_inflight_call_is_safe ... ok
+test slow_upstream_times_out_cleanly ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_notification-8c45b2d98527ba19)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_platform-fc95853b6a5cefcd)
+
+running 4 tests
+test db::tests::redact_url_hides_credentials ... ok
+test messaging::tests::subject_matching ... ok
+test messaging::tests::inprocess_bus_pubsub ... ok
+test messaging::tests::inprocess_bus_wildcard_filter ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/config_test.rs (target/debug/deps/config_test-33973e72e0cdc54f)
+
+running 7 tests
+test anthropic_default_base_url ... ok
+test gemini_default_base_url ... ok
+test parse_provider_kind_case_insensitive ... ok
+test parse_provider_kind_from_env_string ... ok
+test parse_provider_kind_invalid_returns_error ... ok
+test provider_kind_deserializes_from_json ... ok
+test provider_kind_serializes_to_lowercase_json ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_proxy-fd5108aa4cba7b84)
+
+running 6 tests
+test token_counter::tests::handles_missing_usage ... ok
+test token_counter::tests::handles_invalid_json ... ok
+test token_counter::tests::extracts_anthropic_usage ... ok
+test rate_limiter::tests::disabled_allows_all ... ok
+test rate_limiter::tests::separate_keys_have_separate_limits ... ok
+test rate_limiter::tests::allows_within_burst ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/integration_test.rs (target/debug/deps/integration_test-98cc0f143ee96d5b)
+
+running 3 tests
+test fast_path_blocks_unsafe_content ... ok
+test fast_path_detects_secrets_in_response ... ok
+test normal_request_passes_through ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/provider_integration_test.rs (target/debug/deps/provider_integration_test-504a923ed2358431)
+
+running 8 tests
+test anthropic_forwards_api_key_as_header ... ok
+test anthropic_fast_path_redacts_secrets ... ok
+test gemini_fast_path_redacts_secrets ... ok
+test anthropic_does_not_duplicate_auth_headers ... ok
+test gemini_forwards_api_key_as_query_param ... ok
+test both_providers_return_latency_header ... ok
+test both_providers_pass_through_clean_content ... ok
+test both_providers_return_correlation_id ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/controlplane_shadow_analysis-369bf9c4f2b218bd)
+
+running 113 tests
+test calibration::tests::inert_calibration_is_inert_and_identity ... ok
+test calibration::tests::calibration_keeps_endpoints_on_their_own_side_of_the_middle ... ok
+test calibration::tests::fitted_temperature_only_applies_to_its_own_bucket ... ok
+test calibration::tests::calibration_is_monotonic_so_threshold_bands_stay_ordered ... ok
+test bias::tests::passes_neutral_text ... ok
+test bias::tests::detects_disability_bias ... ok
+test bias::tests::detects_racial_bias ... ok
+test bias::tests::multi_category_detected ... ok
+test bias::tests::detects_gender_bias ... ok
+test calibration::tests::malformed_temperatures_are_ignored_rather_than_guessed ... ok
+test calibration::tests::option_buckets_group_option_counts ... ok
+test calibration::tests::store_is_shared_across_clones ... ok
+test calibration::tests::store_starts_inert_and_can_be_replaced ... ok
+test calibration::tests::temperature_above_one_softens_extremes_toward_the_middle ... ok
+test calibration::tests::temperature_below_one_sharpens ... ok
+test calibration::tests::temperature_lookup_defaults_to_one ... ok
+test calibration::tests::temperature_one_is_the_identity ... ok
+test calibration::tests::weights_are_clamped_to_a_valid_range ... ok
+test governance_questions::tests::a_truncated_prompt_alone_does_not_chunk_the_response ... ok
+test governance_questions::tests::blank_context_is_treated_as_absent ... ok
+test governance_questions::tests::category_questions_have_an_escape_hatch_option ... ok
+test governance_questions::tests::context_questions_only_appear_with_context ... ok
+test governance_questions::tests::every_window_keeps_the_prompt_and_context ... ok
+test governance_questions::tests::no_noul_questions_are_used ... ok
+test governance_questions::tests::long_response_sets_truncated_flag ... ok
+test governance_questions::tests::chunking_never_splits_a_multibyte_character ... ok
+test governance_questions::tests::long_response_recovers_the_elided_middle ... ok
+test governance_questions::tests::short_response_produces_exactly_one_window ... ok
+test governance_questions::tests::questions_always_include_the_unconditional_checks ... ok
+test governance_questions::tests::state_without_context_omits_context_and_flags_nothing ... ok
+test governance_questions::tests::truncate_keeps_both_ends ... ok
+test governance_questions::tests::truncate_leaves_short_text_untouched ... ok
+test governance_questions::tests::truncate_never_splits_multibyte_characters ... ok
+test governance_questions::tests::truncate_zero_budget_is_empty ... ok
+test governance_questions::tests::yes_no_questions_use_neutral_ab_keys ... ok
+test groundedness::tests::high_groundedness_when_response_matches_context ... ok
+test groundedness::tests::passes_when_empty_context ... ok
+test groundedness::tests::passes_when_no_context ... ok
+test groundedness::tests::low_groundedness_when_response_unrelated_to_context ... ok
+test groundedness::tests::sentence_splitting_works ... ok
+test groundedness::tests::significant_words_filters_stop_words ... ok
+test laya_client::tests::a_single_window_does_not_mention_pooling ... ok
+test laya_client::tests::answers_without_usable_values_produce_nothing ... ok
+test laya_client::tests::bias_is_a_responsibility_finding_with_a_category ... ok
+test laya_client::tests::calibration_softens_an_over_confident_judge_below_the_escalation_band ... ok
+test laya_client::tests::context_checks_are_skipped_without_context ... ok
+test laya_client::tests::destructive_tool_action_escalates ... ok
+test laya_client::tests::empty_answers_produce_no_verdicts ... ok
+test laya_client::tests::detail_keys_are_asked_by_the_schema ... ok
+test laya_client::tests::every_context_gated_scale_is_gated_by_the_schema_too ... ok
+test laya_client::tests::every_emitted_verdict_carries_the_laya_prefix ... ok
+test laya_client::tests::evidence_is_not_emitted_below_the_evidence_floor ... ok
+test laya_client::tests::evidence_is_superseded_once_the_reading_acts ... ok
+test laya_client::tests::evidence_requires_context_for_context_checks ... ok
+test laya_client::tests::evidence_suffix_never_collides_with_an_actionable_check_name ... ok
+test laya_client::tests::groundedness_polarity_is_inverted ... ok
+test laya_client::tests::hallucination_edits_in_the_middle_band ... ok
+test laya_client::tests::hallucination_escalates_above_threshold ... ok
+test laya_client::tests::hallucination_stays_silent_below_the_edit_threshold ... ok
+test laya_client::tests::inert_calibration_preserves_the_raw_reading_exactly ... ok
+test laya_client::tests::injection_escalates_and_reports_the_family ... ok
+test laya_client::tests::low_stakes_and_derived_checks_never_emit_evidence ... ok
+test laya_client::tests::material_severity_upgrades_a_borderline_hallucination ... ok
+test laya_client::tests::max_pool_ignores_windows_without_an_answer ... ok
+test laya_client::tests::max_pool_is_inverted_for_groundedness ... ok
+test laya_client::tests::max_pool_keeps_the_riskiest_window ... ok
+test laya_client::tests::max_pool_of_nothing_is_empty ... ok
+test laya_client::tests::max_pool_picks_the_highest_tool_risk_across_windows ... ok
+test laya_client::tests::medium_tool_action_edits_and_low_stays_silent ... ok
+test laya_client::tests::only_severe_toxicity_acts ... ok
+test laya_client::tests::other_category_is_not_reported_as_a_finding_detail ... ok
+test laya_client::tests::probability_falls_back_to_confidence_without_a_distribution ... ok
+test laya_client::tests::reidentification_is_a_responsibility_finding ... ok
+test laya_client::tests::question_scales_cover_every_emitted_check ... ok
+test laya_client::tests::sub_threshold_bias_is_published_as_evidence_only ... ok
+test laya_client::tests::truncated_input_is_disclosed_in_the_reason ... ok
+test laya_client::tests::verbosity_is_capped_at_edit ... ok
+test laya_client::tests::window_count_is_disclosed_in_the_reason ... ok
+test pattern_promotion::tests::build_promoted_rule_json ... ok
+test pattern_promotion::tests::derive_pattern_key_bias ... ok
+test pattern_promotion::tests::derive_pattern_key_groundedness ... ok
+test pattern_promotion::tests::derive_pattern_key_unsafe ... ok
+test pattern_promotion::tests::different_patterns_tracked_separately ... ok
+test pattern_promotion::tests::tracks_and_promotes_after_threshold ... ok
+test prompt_injection::tests::empty_prompt_safe ... ok
+test prompt_injection::tests::clean_prompt_passes ... ok
+test semantic_pii::tests::detects_medical_and_location ... ok
+test semantic_pii::tests::detects_multiple_quasi_identifiers ... ok
+test prompt_injection::tests::detects_prompt_extraction ... ok
+test prompt_injection::tests::detects_instruction_override ... ok
+test prompt_injection::tests::detects_role_hijack ... ok
+test semantic_pii::tests::high_risk_with_many_categories ... ok
+test semantic_pii::tests::no_false_positives_on_generic_text ... ok
+test prompt_injection::tests::subtle_injection_detected ... ok
+test semantic_pii::tests::passes_when_few_identifiers ... ok
+test toggles::tests::checks_object_disables_toggles ... ok
+test toggles::tests::empty_rows_give_all_enabled ... ok
+test toggles::tests::engine_action_off_disables_pii_family ... ok
+test toggles::tests::judge_stays_on_when_policy_omits_the_key ... ok
+test toggles::tests::policy_can_opt_an_app_out_of_the_decision_judge ... ok
+test verbosity::tests::concise_response_passes ... ok
+test verbosity::tests::disproportionately_long_response_flagged ... ok
+test verbosity::tests::excessively_repetitive_response_flagged ... ok
+test verbosity::tests::info_density_calculation ... ok
+test governance_questions::tests::chunking_covers_every_character_of_the_response ... ok
+test worker::tests::a_pre_judge_laya_evidence_verdict_does_not_supersede_the_heuristic ... ok
+test verbosity::tests::proportional_long_response_passes ... ok
+test worker::tests::demotion_is_a_no_op_without_a_keyword_verdict ... ok
+test worker::tests::keyword_pii_is_dropped_when_presidio_reported ... ok
+test worker::tests::keyword_pii_is_dropped_when_the_judge_reported ... ok
+test worker::tests::keyword_pii_survives_when_the_sidecar_is_down ... ok
+test laya_client::tests::unreachable_judge_fails_open ... ok
+test governance_questions::tests::window_count_is_bounded_on_pathological_input ... ok
+
+test result: ok. 113 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/provider_parsing_test.rs (target/debug/deps/provider_parsing_test-833a9013b2941153)
+
+running 18 tests
+test anthropic_tests::extracts_context_from_system_field ... ok
+test anthropic_tests::extracts_tokens_correctly ... ok
+test cross_provider::both_providers_extract_zero_tokens ... ok
+test cross_provider::both_providers_have_correct_kind ... ok
+test anthropic_tests::extracts_response_text_ignores_tool_use_blocks ... ok
+test anthropic_tests::extracts_prompt_from_messages ... ok
+test anthropic_tests::extracts_response_text_from_content_blocks ... ok
+test cross_provider::both_providers_handle_empty_responses ... ok
+test cross_provider::both_providers_extract_valid_text_from_well_formed_responses ... ok
+test cross_provider::both_providers_return_none_for_invalid_json ... ok
+test gemini_tests::extracts_model_name ... ok
+test gemini_tests::extracts_context_from_system_instruction ... ok
+test gemini_real_world::parse_real_chat_request_with_system_instruction ... ok
+test gemini_real_world::parse_real_generate_content_response ... ok
+test gemini_tests::extracts_prompt_from_contents ... ok
+test gemini_tests::extracts_response_text_from_candidates ... ok
+test gemini_tests::extracts_response_text_from_multiple_parts ... ok
+test gemini_tests::extracts_tokens_from_usage_metadata ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/shadow_config_env_test.rs (target/debug/deps/shadow_config_env_test-88657fc207765ea8)
+
+running 12 tests
+test a_blank_laya_url_is_treated_as_unset ... ok
+test enabling_the_judge_requires_no_other_variable ... ok
+test setting_the_backend_to_laya_or_jev_enables_the_judge ... ok
+test any_other_value_leaves_the_judge_off ... ok
+test auto_and_blank_model_overrides_let_the_router_decide ... ok
+test a_configured_laya_url_is_carried_through ... ok
+test an_explicit_model_override_is_forwarded ... ok
+test the_env_harness_actually_restores_state ... ok
+test surrounding_whitespace_never_produces_a_configured_but_broken_judge ... ok
+test the_judge_api_key_prefers_laya_then_falls_back_to_typesafe ... ok
+test the_timeout_parses_and_falls_back_on_garbage ... ok
+test with_nothing_set_the_judge_is_disabled ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_audit
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_common
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_cost_accounting
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_dashboard_api
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_decision
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_escalation
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_fast_path
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_mcp_server
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_notification
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_platform
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_proxy
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controlplane_shadow_analysis
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `-p controlplane-dashboard-api --test api_integration_test`

@@ -1,0 +1,10 @@
+      check_name       | count 
+-----------------------+-------
+ laya-tool-use         |    22
+ laya-prompt-injection |     8
+ prompt_injection      |     6
+ secret_detection      |     4
+ unsafe_content        |     4
+ tool_use_detection    |     3
+(6 rows)
+
