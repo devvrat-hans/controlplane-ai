@@ -9,7 +9,7 @@ pub struct ShadowVerdict {
     pub outcome: Outcome,
     pub confidence: f32,
     pub reason: String,
-    pub duration_ms: u32,
+    pub duration_ms: f64,
 }
 
 /// Read an environment variable, trimmed, treating a blank value as absent.

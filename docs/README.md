@@ -42,7 +42,7 @@ grounded in the code, not the pitch.
 | [`architecture-diagram.md`](analysis/architecture-diagram.md) | Slide-by-slide Mermaid architecture diagrams for the deck (simple, one per slide, with how to explain each) plus the current-vs-Laya views |
 | [`why-rust.md`](analysis/why-rust.md) | Why the backend is Rust: performance, safety and concurrency, with the real code patterns — and why not Python or JavaScript |
 | [`open-source-stack.md`](analysis/open-source-stack.md) | Every open-source component we use, the key benefit of each, the alternative we rejected, and what we deliberately did not adopt |
-| [`docker-build-troubleshooting.md`](analysis/docker-build-troubleshooting.md) | Runbook for `input/output error` / disk-full failures with Docker + Colima |
+| [`cross-domain-benchmark-report.md`](analysis/cross-domain-benchmark-report.md) | Cross-domain benchmark (`benchmarks/cross_domain`): detection, blocking and latency with the judge off vs on, with reproduction commands |
 
 ---
 
@@ -53,7 +53,7 @@ grounded in the code, not the pitch.
   `original/presentation-script.md`
 - **Reviewing the code?** `analysis/checks-inventory.md` → `analysis/repo-audit.md`
 - **Planning the finale?** `analysis/repo-audit.md` §6–7
-- **`docker compose up --build` failing?** `analysis/docker-build-troubleshooting.md`
+- **`docker compose up` failing?** README §17 (Troubleshooting) and §17a (known limitations)
 
 > **Note on claims:** where the original docs and the code disagreed, the analysis
 > documents follow the **code** and say so. Treat `analysis/` as the current source of

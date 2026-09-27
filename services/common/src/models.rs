@@ -61,6 +61,10 @@ pub struct Verdict {
     pub reason: String,
     pub check_name: String,
     pub duration_ms: Option<i32>,
+    /// Exact check duration in microseconds. `duration_ms` is whole milliseconds
+    /// (kept for older consumers), so sub-millisecond checks read 0 there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_us: Option<i64>,
     pub metadata: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
@@ -85,6 +89,7 @@ impl Verdict {
             reason: reason.into(),
             check_name: check_name.into(),
             duration_ms: None,
+            duration_us: None,
             metadata: None,
             created_at: Utc::now(),
         }
@@ -92,6 +97,14 @@ impl Verdict {
 
     pub fn with_duration(mut self, ms: i32) -> Self {
         self.duration_ms = Some(ms);
+        self
+    }
+
+    /// Set the duration from fractional milliseconds, keeping microsecond precision.
+    pub fn with_duration_precise(mut self, ms: f64) -> Self {
+        let ms = ms.max(0.0);
+        self.duration_ms = Some(ms as i32);
+        self.duration_us = Some((ms * 1000.0).round() as i64);
         self
     }
 

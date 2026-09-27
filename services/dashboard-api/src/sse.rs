@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
-use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
@@ -37,14 +36,13 @@ impl SseBroadcaster {
     }
 }
 
-/// Spawn a background task that bridges event bus verdicts to the SSE broadcaster,
-/// in-memory store, and (when available) persists them to PostgreSQL.
+/// Spawn a background task that bridges event bus verdicts to the SSE broadcaster
+/// and the in-memory store. Persistence is owned by the decision service.
 pub fn spawn_sse_bridge(
     broadcaster: SseBroadcaster,
     subscriber: Arc<dyn EventSubscriber>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     verdict_store: Option<InMemoryVerdictStore>,
-    db_pool: Option<PgPool>,
 ) {
     tokio::spawn(async move {
         let mut receiver = match subscriber.subscribe("controlplane.verdict.*").await {
@@ -94,47 +92,15 @@ pub fn spawn_sse_bridge(
                                         confidence: verdict.confidence,
                                         reason: verdict.reason.clone(),
                                         check_name: verdict.check_name.clone(),
-                                        latency_ms: None,
+                                        latency_ms: verdict.duration_ms,
                                         created_at: envelope.timestamp,
                                     });
                                 }
 
-                                // Persist to PostgreSQL so dashboard queries see real data
-                                if let Some(ref pool) = db_pool {
-                                    let call_id = verdict.call_id;
-                                    let verdict_id = verdict.id;
-                                    let axis = verdict.axis.as_str();
-                                    let path = verdict.path.as_str();
-                                    let outcome = verdict.outcome.as_str();
-                                    let confidence = verdict.confidence;
-                                    let reason = verdict.reason.clone();
-                                    let check_name = verdict.check_name.clone();
-                                    let app_id = envelope.app_id;
-
-                                    let pool = pool.clone();
-                                    tokio::spawn(async move {
-                                        let result = sqlx::query(
-                                            "INSERT INTO verdicts (id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, created_at) \
-                                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) \
-                                             ON CONFLICT (id) DO NOTHING"
-                                        )
-                                        .bind(verdict_id)
-                                        .bind(call_id)
-                                        .bind(app_id)
-                                        .bind(axis)
-                                        .bind(path)
-                                        .bind(outcome)
-                                        .bind(confidence)
-                                        .bind(&reason)
-                                        .bind(&check_name)
-                                        .execute(&pool)
-                                        .await;
-
-                                        if let Err(e) = result {
-                                            warn!(error = %e, "SSE bridge: failed to persist verdict to DB");
-                                        }
-                                    });
-                                }
+                                // No DB write here: the decision service's verdict collector is the
+                                // single writer of `verdicts` (AGENTS.md: dashboard-api makes no direct
+                                // DB writes). A second, duration-less insert raced it and, winning via
+                                // ON CONFLICT DO NOTHING, dropped the measured check duration.
                             }
                         }
                         None => {

@@ -7,6 +7,7 @@ Each endpoint accepts text and returns structured scan results.
 
 import logging
 import os
+import re
 import time
 from typing import List, Optional
 
@@ -269,6 +270,71 @@ def scan_bias(req: ScanRequest):
     )
 
 
+STOP_WORDS = {
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+    'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'shall', 'can', 'to',
+    'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during',
+    'before', 'after', 'above', 'below', 'between', 'and', 'but', 'or', 'not', 'no', 'nor', 'so',
+    'yet', 'both', 'either', 'neither', 'each', 'every', 'all', 'any', 'few', 'more', 'most',
+    'other', 'some', 'such', 'than', 'too', 'very', 'just', 'about', 'also', 'it', 'its', 'this',
+    'that', 'these', 'those', 'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'him', 'his',
+    'she', 'her', 'they', 'them', 'their',
+}
+
+# DeepEval is an LLM-as-a-judge metric, so it is only as good as its judge model.
+# It is OPT-IN: used when OPENAI_API_KEY is set (DeepEval's default judge) or when
+# HALLUCINATION_JUDGE_MODEL names a local Ollama model. Measured on this stack, the
+# demo model qwen2.5:1.5b returned inverted verdicts and took 7-14 s per call on CPU
+# (over the shadow worker's 5 s sidecar timeout), so it is not used implicitly.
+# Without a judge, the deterministic fact-grounding check below is used.
+HALLUCINATION_THRESHOLD = float(os.environ.get("HALLUCINATION_THRESHOLD", "0.5"))
+HALLUCINATION_JUDGE_MODEL = os.environ.get("HALLUCINATION_JUDGE_MODEL", "").strip()
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+
+
+def _hallucination_judge_configured() -> bool:
+    return bool(os.environ.get("OPENAI_API_KEY") or HALLUCINATION_JUDGE_MODEL)
+
+
+def _hallucination_judge():
+    """Judge model for DeepEval: None = DeepEval's default (OpenAI), else local Ollama."""
+    if os.environ.get("OPENAI_API_KEY"):
+        return None
+    from deepeval.models import OllamaModel
+
+    return OllamaModel(model=HALLUCINATION_JUDGE_MODEL, base_url=OLLAMA_BASE_URL, temperature=0)
+
+
+_FACT_TOKEN = re.compile(r"\b(?:\d[\d,.]*\d|\d|[A-Z][a-zA-Z'-]+)\b")
+
+
+def _key_facts(text: str) -> set:
+    """Names and numbers in `text` — the claims a grounded answer must not invent.
+
+    Capitalized words that merely open a sentence are ignored, as are stop words.
+    """
+    facts = set()
+    for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
+        for m in _FACT_TOKEN.finditer(sentence):
+            token = m.group(0).strip(".,").lower()
+            opens_sentence = m.start() == 0 and not token[0].isdigit()
+            if token and token not in STOP_WORDS and not opens_sentence:
+                facts.add(token)
+    return facts
+
+
+def grounding_check(response_text: str, context_text: str):
+    """Deterministic hallucination check: share of the answer's names/numbers that
+    do not appear anywhere in the grounding context. Returns (score, unsupported)."""
+    context_lower = context_text.lower()
+    context_words = set(re.findall(r"[a-z0-9][a-z0-9'-]*", context_lower))
+    facts = _key_facts(response_text)
+    if not facts:
+        return 0.0, []
+    unsupported = sorted(f for f in facts if f not in context_words and f not in context_lower)
+    return len(unsupported) / len(facts), unsupported
+
+
 @app.post("/scan/hallucination", response_model=HallucinationResponse)
 def scan_hallucination(req: ScanRequest):
     """
@@ -282,8 +348,10 @@ def scan_hallucination(req: ScanRequest):
     response_text = req.text
     context_text = req.prompt or ""
 
-    # Try DeepEval first
+    # DeepEval only when a real judge is configured (see HALLUCINATION_JUDGE_MODEL).
     try:
+        if not _hallucination_judge_configured():
+            raise ImportError("no hallucination judge configured")
         from deepeval import evaluate
         from deepeval.metrics import HallucinationMetric
         from deepeval.test_case import LLMTestCase
@@ -297,17 +365,23 @@ def scan_hallucination(req: ScanRequest):
                 duration_ms=round((time.time() - start) * 1000, 2),
             )
 
+        # HallucinationMetric reads `context` (not `retrieval_context`), and LLMTestCase
+        # requires `input`. Without both, every call failed validation and silently
+        # fell through to the heuristic below.
         test_case = LLMTestCase(
+            input=context_text,
             actual_output=response_text,
-            retrieval_context=[context_text],
+            context=[context_text],
         )
 
-        metric = HallucinationMetric(threshold=0.5)
+        metric = HallucinationMetric(threshold=HALLUCINATION_THRESHOLD, model=_hallucination_judge(), async_mode=False)
         metric.measure(test_case)
 
+        # HallucinationMetric's score is the fraction of context it found contradicted.
         score = metric.score
-        is_hallucinated = metric.is_successful() is False
-        reason = f"DeepEval hallucination score: {score:.4f}"
+        is_hallucinated = score > HALLUCINATION_THRESHOLD
+        judge = "openai" if os.environ.get("OPENAI_API_KEY") else f"ollama:{HALLUCINATION_JUDGE_MODEL}"
+        reason = f"DeepEval hallucination score {score:.4f} ({judge}): {metric.reason or 'no reason given'}"
 
         logger.info(f"DeepEval hallucination check: score={score:.4f}, hallucinated={is_hallucinated}")
 
@@ -333,32 +407,16 @@ def scan_hallucination(req: ScanRequest):
             duration_ms=round((time.time() - start) * 1000, 2),
         )
 
-    # Simple NLI-like check: measure claim overlap between response and context
-    response_words = set(response_text.lower().split())
-    context_words = set(context_text.lower().split())
-
-    # Remove stop words
-    stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-                  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-                  'should', 'may', 'might', 'shall', 'can', 'to', 'of', 'in', 'for',
-                  'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during',
-                  'before', 'after', 'above', 'below', 'between', 'and', 'but', 'or',
-                  'not', 'no', 'nor', 'so', 'yet', 'both', 'either', 'neither', 'each',
-                  'every', 'all', 'any', 'few', 'more', 'most', 'other', 'some', 'such',
-                  'than', 'too', 'very', 'just', 'about', 'also', 'it', 'its', 'this',
-                  'that', 'these', 'those', 'i', 'me', 'my', 'we', 'our', 'you', 'your',
-                  'he', 'him', 'his', 'she', 'her', 'they', 'them', 'their'}
-    response_content = response_words - stop_words
-    context_content = context_words - stop_words
-
-    if not response_content:
-        score = 0.0
-    else:
-        overlap = len(response_content & context_content)
-        score = 1.0 - (overlap / len(response_content))
-
-    is_hallucinated = score > 0.7
-    reason = f"Heuristic overlap score: {score:.4f} (response words not in context)"
+    # Deterministic fact-grounding check: names and numbers in the answer that the
+    # context never mentions are treated as invented. (The previous word-overlap
+    # heuristic scored "built in 1720 by Napoleon" as 0.67 and still passed it.)
+    score, unsupported = grounding_check(response_text, context_text)
+    is_hallucinated = score >= HALLUCINATION_THRESHOLD
+    reason = (
+        f"Grounding check: {len(unsupported)} unsupported fact(s) {unsupported[:8]} (score {score:.4f})"
+        if unsupported
+        else "Grounding check: every name and number in the answer appears in the context"
+    )
 
     return HallucinationResponse(
         is_hallucinated=is_hallucinated,

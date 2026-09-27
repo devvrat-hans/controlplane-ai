@@ -33,7 +33,7 @@ impl UnsafeContentCheck {
         // Check built-in severe patterns
         for (pattern, category) in DEFAULT_UNSAFE_PATTERNS {
             if body_lower.contains(pattern) {
-                let duration_ms = start.elapsed().as_millis() as u32;
+                let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
                 return Some(FastPathVerdict {
                     axis: Axis::Responsibility,
                     check_name: "unsafe_content".to_string(),
@@ -48,7 +48,7 @@ impl UnsafeContentCheck {
         // Check configurable blocklist from policy cache
         for keyword in &rules.unsafe_keywords {
             if body_lower.contains(&keyword.to_lowercase()) {
-                let duration_ms = start.elapsed().as_millis() as u32;
+                let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
                 return Some(FastPathVerdict {
                     axis: Axis::Responsibility,
                     check_name: "unsafe_content".to_string(),

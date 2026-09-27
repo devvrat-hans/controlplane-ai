@@ -6,3 +6,5 @@ spacy>=3.7.0
 transformers>=4.40.0
 pydantic>=2.0.0
 deepeval>=1.0.0
+# Client DeepEval needs to use a local Ollama judge (HALLUCINATION_JUDGE_MODEL)
+ollama>=0.4.0

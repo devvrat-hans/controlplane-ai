@@ -85,6 +85,7 @@ exposed by default.
 | `get_latency_timeseries` | read | `GET /api/v1/metrics/latency-timeseries` |
 | `get_cost_summary` | read | `GET /api/v1/cost/summary` |
 | `get_cost_timeseries` | read | `GET /api/v1/cost/timeseries` |
+| `get_cost_daily` | read | `GET /api/v1/cost/daily` |
 | `get_cost_anomalies` | read | `GET /api/v1/cost/anomalies` |
 | `list_escalations` | read | `GET /api/v1/escalations` |
 | `get_session_thread` | read | `GET /api/v1/sessions/{call_id}/thread` |

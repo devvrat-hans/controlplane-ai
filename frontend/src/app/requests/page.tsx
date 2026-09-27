@@ -209,7 +209,7 @@ function RequestRow({ request, selectable, selected, onToggle }: { request: Requ
       className={`flex items-center justify-between px-4 py-3 transition-colors cursor-pointer ${
         selected ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-accent/30"
       }`}
-      onClick={(e) => {
+      onClick={() => {
         if (selectable) return;
         router.push(`/requests/${request.id}`);
       }}

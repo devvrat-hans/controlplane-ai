@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -7,15 +6,14 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use controlplane_common::events::{subjects, EventEnvelope, InterceptCapturedPayload};
-use controlplane_common::types::AppId;
+use controlplane_common::types::{AppId, COST_PER_REQUEST_USD};
 use controlplane_platform::messaging::EventSubscriber;
 
-use crate::pricing::{default_pricing_table, get_pricing, ModelPricing};
-
 /// Cost ledger: tracks per-request costs and maintains running windows.
+/// Every request is billed a flat [`COST_PER_REQUEST_USD`]; tokens are still
+/// recorded for usage analytics but do not affect spend.
 pub struct CostLedger {
     pool: PgPool,
-    pricing_table: HashMap<String, ModelPricing>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -42,36 +40,29 @@ pub struct CostAnomaly {
 
 impl CostLedger {
     pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool,
-            pricing_table: default_pricing_table(),
-        }
+        Self { pool }
     }
 
-    pub fn with_pricing(mut self, table: HashMap<String, ModelPricing>) -> Self {
-        self.pricing_table = table;
-        self
-    }
-
-    /// Record a single request's token usage and cost.
+    /// Record a single request's token usage and its flat per-request cost.
     pub async fn record_usage(
         &self,
         app_id: AppId,
+        call_id: Option<Uuid>,
         model: &str,
         input_tokens: Option<i32>,
         output_tokens: Option<i32>,
     ) -> Result<f64, sqlx::Error> {
         let input = input_tokens.unwrap_or(0);
         let output = output_tokens.unwrap_or(0);
-        let pricing = get_pricing(&self.pricing_table, model);
-        let cost_usd = pricing.compute_cost(input, output);
+        let cost_usd = COST_PER_REQUEST_USD;
 
         sqlx::query(
-            "INSERT INTO cost_entries (id, app_id, model, input_tokens, output_tokens, cost_usd, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)"
+            "INSERT INTO cost_entries (id, app_id, call_id, model, input_tokens, output_tokens, cost_usd, created_at) \
+             VALUES ($1, $2, (SELECT id FROM intercepted_calls WHERE id = $3), $4, $5, $6, $7, $8)"
         )
         .bind(Uuid::now_v7())
         .bind(app_id)
+        .bind(call_id)
         .bind(model)
         .bind(input)
         .bind(output)
@@ -184,7 +175,7 @@ impl CostLedger {
                     baseline_value: baseline_cost_rate,
                     deviation_factor: deviation,
                     reason: format!(
-                        "{:.1}x normal cost detected (${:.4}/hr vs baseline ${:.4}/hr)",
+                        "{:.1}x normal spend detected (${:.2}/hr vs baseline ${:.2}/hr)",
                         deviation, recent_cost_rate, baseline_cost_rate
                     ),
                 });
@@ -265,6 +256,7 @@ pub fn spawn_cost_tracker(
                                     let data = &envelope.payload;
                                     if let Err(e) = ledger.record_usage(
                                         envelope.app_id,
+                                        Some(data.call_id),
                                         &data.model,
                                         data.token_count_input,
                                         data.token_count_output,

@@ -18,7 +18,7 @@ pub struct VerbosityResult {
     pub length_ratio: f32,
     pub verbosity_score: f32,
     pub verdict: Option<ShadowVerdict>,
-    pub duration_ms: u32,
+    pub duration_ms: f64,
 }
 
 impl VerbosityChecker {
@@ -57,7 +57,7 @@ impl VerbosityChecker {
 
         let verbosity_score = (density_penalty * 0.4 + ratio_penalty * 0.6).min(1.0);
 
-        let duration_ms = start.elapsed().as_millis() as u32;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         let verdict = if verbosity_score > 0.6 || (info_density < self.min_density && length_ratio > self.max_ratio) {
             Some(ShadowVerdict {

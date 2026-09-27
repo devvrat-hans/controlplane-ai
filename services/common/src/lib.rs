@@ -11,4 +11,4 @@ pub mod providers;
 pub mod types;
 
 pub use providers::create_provider;
-pub use types::{AppId, Axis, CorrelationId, Outcome, Path, TeamId, UserId};
+pub use types::{AppId, Axis, CorrelationId, Outcome, Path, TeamId, UserId, COST_PER_REQUEST_USD};

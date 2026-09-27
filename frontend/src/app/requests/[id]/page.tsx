@@ -9,6 +9,39 @@ import { useUser, canEditPolicies } from "@/lib/auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
+/** Milliseconds with precision that scales with magnitude: 0.042ms, 3.271ms, 41.27ms, 812.4ms. */
+function formatMs(ms: number): string {
+  // Timers resolve to 1µs; anything below that is reported as a bound, not as 0.
+  if (ms < 0.001) return "<0.001ms";
+  const digits = ms < 10 ? 3 : ms < 100 ? 2 : 1;
+  return `${ms.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}ms`;
+}
+
+/**
+ * Prefer the exact microsecond value; fall back to the legacy whole-millisecond
+ * column, where a stored 0 only means "under 1ms" (the real value was never kept).
+ */
+function formatLatency(us: number | null | undefined, ms: number | null | undefined): string {
+  if (us != null) return formatMs(us / 1000);
+  if (ms != null) return ms === 0 ? "<1ms" : `${ms}ms`;
+  return "—";
+}
+
+/** Confidence as a percentage with one decimal, e.g. 87.3%. */
+function formatConfidence(c: number): string {
+  return `${(c * 100).toFixed(1)}%`;
+}
+
+// Verdict check names that differ from the check table's row names.
+const CHECK_NAME_ALIASES: Record<string, string> = {
+  session_risk_accumulator: "session_risk",
+  "presidio-pii": "pii",
+  "llm-guard-toxicity": "toxicity",
+  "deepeval-hallucination": "hallucination",
+  "input-toxicity": "input_toxicity",
+  "input-bias": "input_bias",
+};
+
 interface CallDetail {
   id: string;
   correlation_id: string;
@@ -18,9 +51,23 @@ interface CallDetail {
   token_count_output: number | null;
   upstream_latency_ms: number | null;
   fast_path_latency_ms: number | null;
-  request_payload: any;
-  response_payload: any;
+  /** Exact timings in microseconds; null for requests recorded before they existed. */
+  upstream_latency_us?: number | null;
+  fast_path_latency_us?: number | null;
+  /** {check_name: microseconds} for every fast-path check that ran, passes included. */
+  fast_path_check_timings_us?: Record<string, number> | null;
+  /** One record per shadow check: ran (pass unless a verdict exists), skipped, or error. */
+  shadow_check_runs?: ShadowCheckRun[] | null;
+  request_payload: unknown;
+  response_payload: unknown;
   created_at: string;
+}
+
+interface ShadowCheckRun {
+  check_name: string;
+  status: "ran" | "skipped" | "error";
+  duration_us: number | null;
+  detail?: string | null;
 }
 
 interface VerdictDetail {
@@ -32,6 +79,7 @@ interface VerdictDetail {
   reason: string;
   check_name: string;
   latency_ms: number | null;
+  latency_us?: number | null;
   created_at: string;
 }
 
@@ -40,7 +88,7 @@ interface AuditDetail {
   action_taken: string;
   record_hash: string;
   prev_hash: string;
-  metadata: any;
+  metadata: { axis?: string; check_name?: string; confidence?: number } | null;
   created_at: string;
 }
 
@@ -247,11 +295,11 @@ export default function RequestDetailPage() {
               </div>
               <div>
                 <span className="text-muted-foreground text-xs">Upstream Latency</span>
-                <p className="font-mono text-xs mt-0.5">{call.upstream_latency_ms ?? "—"}ms</p>
+                <p className="font-mono text-xs mt-0.5">{formatLatency(call.upstream_latency_us, call.upstream_latency_ms)}</p>
               </div>
               <div>
                 <span className="text-muted-foreground text-xs">Fast-Path Latency</span>
-                <p className="font-mono text-xs mt-0.5">{call.fast_path_latency_ms ?? "—"}ms</p>
+                <p className="font-mono text-xs mt-0.5">{formatLatency(call.fast_path_latency_us, call.fast_path_latency_ms)}</p>
               </div>
             </div>
 
@@ -314,7 +362,7 @@ export default function RequestDetailPage() {
                     {p.reviewer_action}
                   </Badge>
                   {p.reviewer_reason && (
-                    <span className="italic text-muted-foreground truncate flex-1">"{p.reviewer_reason}"</span>
+                    <span className="italic text-muted-foreground truncate flex-1">&ldquo;{p.reviewer_reason}&rdquo;</span>
                   )}
                   <span className="font-mono text-[10px] text-muted-foreground shrink-0">
                     {Math.round(p.score * 100)}% similar
@@ -346,7 +394,7 @@ export default function RequestDetailPage() {
                       <Badge variant="outline" className={`text-[10px] ${v.path === "fast" ? "border-blue-500/50 text-blue-500" : "border-purple-500/50 text-purple-500"}`}>
                         {v.path}
                       </Badge>
-                      <span className="text-[10px] text-muted-foreground ml-auto">{(v.confidence * 100).toFixed(0)}%</span>
+                      <span className="text-[10px] text-muted-foreground ml-auto font-mono">{formatConfidence(v.confidence)}</span>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1.5 ml-0.5">{v.reason}</p>
                     <div className="flex items-center gap-4 mt-1.5 text-[10px] text-muted-foreground/60">
@@ -527,7 +575,7 @@ export default function RequestDetailPage() {
             </p>
           </CardHeader>
           <CardContent className="p-0">
-            <PolicyCheckTable verdicts={verdicts} fastPathLatency={call.fast_path_latency_ms} />
+            <PolicyCheckTable verdicts={verdicts} call={call} />
           </CardContent>
         </Card>
       </div>
@@ -551,6 +599,9 @@ const ALL_CHECKS = [
   { name: "pii", axis: "responsibility", path: "shadow", description: "Presidio NER-based PII detection" },
   { name: "toxicity", axis: "responsibility", path: "shadow", description: "Toxic content classification" },
   { name: "hallucination", axis: "performance", path: "shadow", description: "DeepEval LLM-as-a-judge" },
+  { name: "input_toxicity", axis: "responsibility", path: "shadow", description: "Toxicity scan of the prompt (LLM Guard)" },
+  { name: "input_bias", axis: "responsibility", path: "shadow", description: "Bias scan of the prompt (LLM Guard)" },
+  { name: "decision_judge", axis: "responsibility", path: "shadow", description: "Laya/Jev decision-model judge (optional)" },
 ];
 
 function LifecycleTimeline({
@@ -603,33 +654,78 @@ function LifecycleTimeline({
   );
 }
 
-function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDetail[]; fastPathLatency: number | null }) {
+function PolicyCheckTable({ verdicts, call }: { verdicts: VerdictDetail[]; call: CallDetail }) {
   // Merge static check list with actual verdicts
-  const verdictMap = new Map(verdicts.map(v => [v.check_name, v]));
+  const verdictMap = new Map(verdicts.map(v => [CHECK_NAME_ALIASES[v.check_name] ?? v.check_name, v]));
+  const timings = call.fast_path_check_timings_us ?? null;
 
-  // Estimate per-check latency for fast-path (total / count)
+  // Legacy requests (no per-check timings): spread the total evenly, shown as an estimate.
   const fastCheckCount = ALL_CHECKS.filter(c => c.path === "fast").length;
-  const estimatedFastLatency = fastPathLatency && fastCheckCount > 0
-    ? Math.round(fastPathLatency / fastCheckCount)
+  const estimatedFastLatency = call.fast_path_latency_ms && fastCheckCount > 0
+    ? call.fast_path_latency_ms / fastCheckCount
     : null;
 
-  const rows = ALL_CHECKS.map(check => {
+  const shadowRuns = new Map((call.shadow_check_runs ?? []).map(r => [r.check_name, r]));
+
+  type RunStatus = "ran" | "not_run" | "error" | "unknown";
+  interface CheckRow {
+    name: string;
+    description: string;
+    axis: string;
+    path: string;
+    confidence: number;
+    outcome: string;
+    latency: string;
+    status: RunStatus;
+    detail: string | null;
+  }
+
+  // Timing + run status for one check, from the most exact source available.
+  const runInfo = (checkName: string, path: string, verdict?: VerdictDetail): Pick<CheckRow, "latency" | "status" | "detail"> => {
+    const run = path === "shadow" ? shadowRuns.get(checkName) : undefined;
+    if (verdict?.latency_us != null) {
+      return { latency: formatMs(verdict.latency_us / 1000), status: "ran", detail: run?.detail ?? null };
+    }
+    if (path === "fast" && timings) {
+      const us = timings[checkName];
+      // Not in the timing map: the check was skipped (no session key, or an earlier block).
+      return us != null
+        ? { latency: formatMs(us / 1000), status: "ran", detail: null }
+        : { latency: "—", status: "not_run", detail: "not reached (no session key or earlier block)" };
+    }
+    if (run) {
+      const latency = run.duration_us != null ? formatMs(run.duration_us / 1000) : "—";
+      const status: RunStatus = run.status === "ran" ? "ran" : run.status === "error" ? "error" : "not_run";
+      return { latency, status, detail: run.detail ?? null };
+    }
+    if (verdict?.latency_ms != null) return { latency: formatLatency(null, verdict.latency_ms), status: "ran", detail: null };
+    if (path === "fast" && estimatedFastLatency != null) {
+      return { latency: `~${formatMs(estimatedFastLatency)}`, status: "unknown", detail: null };
+    }
+    // Recorded before per-check run records existed (or shadow analysis still pending).
+    return { latency: "—", status: verdict ? "ran" : "unknown", detail: null };
+  };
+
+  const rows: CheckRow[] = ALL_CHECKS.map(check => {
     const verdict = verdictMap.get(check.name);
+    const path = verdict?.path ?? check.path;
     return {
       name: check.name,
       description: check.description,
       axis: verdict?.axis ?? check.axis,
-      path: verdict?.path ?? check.path,
+      path,
       confidence: verdict?.confidence ?? 0,
       outcome: verdict?.outcome ?? "pass",
-      latency: verdict?.latency_ms ?? (check.path === "fast" ? estimatedFastLatency : null),
-      hasVerdict: !!verdict,
+      ...runInfo(check.name, path, verdict),
     };
   });
 
-  // Also include any verdicts with check names not in our static list
+  // Also include any verdicts with check names not in our static list (e.g. individual
+  // decision-judge findings). The proxy's per-axis "fast-path-summary" pass markers are
+  // skipped: every fast check already has its own row, and the total is in the footer.
   for (const v of verdicts) {
-    if (!ALL_CHECKS.find(c => c.name === v.check_name)) {
+    const name = CHECK_NAME_ALIASES[v.check_name] ?? v.check_name;
+    if (name !== "fast-path-summary" && !ALL_CHECKS.find(c => c.name === name)) {
       rows.push({
         name: v.check_name,
         description: v.reason.slice(0, 50),
@@ -637,14 +733,16 @@ function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDeta
         path: v.path,
         confidence: v.confidence,
         outcome: v.outcome,
-        latency: v.latency_ms,
-        hasVerdict: true,
+        ...runInfo(v.check_name, v.path, v),
       });
     }
   }
 
-  const triggeredCount = rows.filter(r => r.outcome !== "pass").length;
-  const passedCount = rows.filter(r => r.outcome === "pass").length;
+  const ranRows = rows.filter(r => r.status !== "not_run" && r.status !== "error");
+  const triggeredCount = ranRows.filter(r => r.outcome !== "pass").length;
+  const passedCount = ranRows.filter(r => r.outcome === "pass").length;
+  const notRunCount = rows.filter(r => r.status === "not_run").length;
+  const errorCount = rows.filter(r => r.status === "error").length;
 
   return (
     <div className="overflow-x-auto">
@@ -660,17 +758,22 @@ function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDeta
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
-          {rows.map((row) => (
+          {rows.map((row, i) => (
             <tr
-              key={row.name}
+              key={`${row.name}-${i}`}
               className={`transition-colors ${
-                row.outcome !== "pass" ? "bg-red-500/3 hover:bg-red-500/8" : "hover:bg-accent/20"
+                row.status === "not_run"
+                  ? "opacity-60 hover:bg-accent/20"
+                  : row.outcome !== "pass" ? "bg-red-500/3 hover:bg-red-500/8" : "hover:bg-accent/20"
               }`}
             >
               <td className="px-4 py-3">
                 <div>
                   <span className="font-medium text-xs">{row.name}</span>
                   <p className="text-[10px] text-muted-foreground mt-0.5">{row.description}</p>
+                  {row.detail && (
+                    <p className="text-[10px] text-muted-foreground/80 mt-0.5 italic">{row.detail}</p>
+                  )}
                 </div>
               </td>
               <td className="px-4 py-3">
@@ -689,17 +792,31 @@ function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDeta
                 </Badge>
               </td>
               <td className="px-4 py-3 text-center">
-                <ConfidenceBar confidence={row.confidence} isPass={row.outcome === "pass"} />
+                {row.status === "not_run" || row.status === "error" ? (
+                  <span className="font-mono text-[11px] text-muted-foreground">—</span>
+                ) : (
+                  <ConfidenceBar confidence={row.confidence} isPass={row.outcome === "pass"} />
+                )}
               </td>
               <td className="px-4 py-3 text-center">
-                <span className="font-mono text-xs text-muted-foreground">
-                  {row.latency != null ? `${row.latency}ms` : "<1ms"}
+                <span className="font-mono text-xs text-muted-foreground tabular-nums">
+                  {row.latency}
                 </span>
               </td>
               <td className="px-4 py-3 text-center">
-                <Badge className={`text-[10px] uppercase font-bold ${OUTCOME_STYLES[row.outcome] ?? ""}`}>
-                  {row.outcome}
-                </Badge>
+                {row.status === "not_run" ? (
+                  <Badge variant="outline" className="text-[10px] uppercase font-bold text-muted-foreground" title={row.detail ?? undefined}>
+                    Not run
+                  </Badge>
+                ) : row.status === "error" ? (
+                  <Badge variant="outline" className="text-[10px] uppercase font-bold text-[#ab570a] border-[#f5a623]/40" title={row.detail ?? undefined}>
+                    Error
+                  </Badge>
+                ) : (
+                  <Badge className={`text-[10px] uppercase font-bold ${OUTCOME_STYLES[row.outcome] ?? ""}`}>
+                    {row.outcome}
+                  </Badge>
+                )}
               </td>
             </tr>
           ))}
@@ -710,7 +827,7 @@ function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDeta
       <div className="border-t border-border bg-muted/20 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className="text-xs text-muted-foreground">
-            {rows.length} checks applied
+            {ranRows.length} of {rows.length} checks ran
           </span>
           <Badge variant="outline" className="text-[10px] border-green-500/50 text-green-500">
             {passedCount} passed
@@ -718,6 +835,16 @@ function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDeta
           {triggeredCount > 0 && (
             <Badge variant="outline" className="text-[10px] border-red-500/50 text-red-500">
               {triggeredCount} triggered
+            </Badge>
+          )}
+          {notRunCount > 0 && (
+            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+              {notRunCount} not run
+            </Badge>
+          )}
+          {errorCount > 0 && (
+            <Badge variant="outline" className="text-[10px] border-[#f5a623]/50 text-[#ab570a]">
+              {errorCount} error
             </Badge>
           )}
         </div>
@@ -728,11 +855,11 @@ function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDeta
           <span>
             Shadow: {rows.filter(r => r.path === "shadow").length}
           </span>
-          {fastPathLatency != null && (
+          {(call.fast_path_latency_us != null || call.fast_path_latency_ms != null) && (
             <span>
               Fast-path total:{" "}
-              <span className="font-mono font-medium text-foreground">
-                {fastPathLatency}ms
+              <span className="font-mono font-medium text-foreground tabular-nums">
+                {formatLatency(call.fast_path_latency_us, call.fast_path_latency_ms)}
               </span>
             </span>
           )}
@@ -743,7 +870,7 @@ function PolicyCheckTable({ verdicts, fastPathLatency }: { verdicts: VerdictDeta
 }
 
 function ConfidenceBar({ confidence, isPass }: { confidence: number; isPass?: boolean }) {
-  const pct = Math.round(confidence * 100);
+  const pct = confidence * 100;
 
   if (isPass && pct === 0) {
     return (
@@ -751,7 +878,7 @@ function ConfidenceBar({ confidence, isPass }: { confidence: number; isPass?: bo
         <div className="w-16 h-2 rounded-full bg-green-500/20 overflow-hidden">
           <div className="h-full rounded-full bg-green-500" style={{ width: "100%" }} />
         </div>
-        <span className="font-mono text-[11px] font-medium w-8 text-right text-green-500">OK</span>
+        <span className="font-mono text-[11px] font-medium w-12 text-right text-green-500">OK</span>
       </div>
     );
   }
@@ -770,7 +897,7 @@ function ConfidenceBar({ confidence, isPass }: { confidence: number; isPass?: bo
       <div className="w-16 h-2 rounded-full bg-muted overflow-hidden">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="font-mono text-[11px] font-medium w-8 text-right">{pct}%</span>
+      <span className="font-mono text-[11px] font-medium w-12 text-right tabular-nums">{pct.toFixed(1)}%</span>
     </div>
   );
 }
@@ -870,11 +997,11 @@ function JudgePanel({
             <div key={row.axis} className="flex items-center gap-3 text-xs">
               <span className="w-28 shrink-0 capitalize">{row.axis}</span>
               <span className="font-mono tabular-nums w-16 text-right" title="judge p">
-                p={(row.judgeP * 100).toFixed(0)}%
+                p={formatConfidence(row.judgeP)}
               </span>
               <span className="text-muted-foreground/50">vs</span>
               <span className="font-mono tabular-nums w-16" title="strongest heuristic p">
-                {(row.heuristicP * 100).toFixed(0)}%
+                {formatConfidence(row.heuristicP)}
               </span>
               <span className="text-muted-foreground/50 font-mono w-16">d={row.delta.toFixed(2)}</span>
               {row.disagreement && (
@@ -913,7 +1040,7 @@ function JudgePanel({
             {evidence.map((v) => (
               <div key={v.id} className="flex items-start gap-2 text-xs opacity-70">
                 <Badge variant="outline" className="text-[10px] shrink-0 font-mono">
-                  {(v.confidence * 100).toFixed(0)}%
+                  {formatConfidence(v.confidence)}
                 </Badge>
                 <span className="font-mono text-[11px] shrink-0">{v.check_name}</span>
                 <span className="text-muted-foreground/70 line-clamp-2">{v.reason}</span>

@@ -8,6 +8,11 @@ use crate::policy_cache::PolicyCache;
 /// The total fast-path budget. If checks exceed this, remaining checks are skipped.
 const FAST_PATH_BUDGET_MS: u128 = 50;
 
+/// Fractional milliseconds elapsed since `start` (microsecond resolution).
+fn elapsed_ms(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1000.0
+}
+
 #[derive(Clone)]
 pub struct FastPathEngine {
     pub policy_cache: PolicyCache,
@@ -21,7 +26,7 @@ pub struct FastPathEngine {
 
 impl FastPathEngine {
     pub fn new(policy_cache: PolicyCache) -> Self {
-        Self {
+        let engine = Self {
             policy_cache,
             secret_detector: SecretDetector::new(),
             cost_cap: CostCapCheck::new(),
@@ -29,7 +34,23 @@ impl FastPathEngine {
             unsafe_check: UnsafeContentCheck::new(),
             session_risk: SessionRiskAccumulator::new(),
             tool_use_detector: ToolUseDetector::new(),
-        }
+        };
+        engine.warm_up();
+        engine
+    }
+
+    /// Run the stateless checks once so their lazily-compiled regexes are built at
+    /// startup. Otherwise the first request pays for compilation (~90 ms for the
+    /// secret patterns in a debug build), overruns the proxy's 50 ms fast-path
+    /// budget, fails open — and that response goes out unredacted.
+    /// Stateful checks (retry, session risk) are skipped so no state is recorded.
+    fn warm_up(&self) {
+        const SAMPLE: &str = "warm-up AKIAIOSFODNN7EXAMPLE api_key=abcdefghijklmnopqrstuvwx             a@b.example 123-45-6789 4111 1111 1111 1111 +1 555 123 4567             {\"tool_calls\":[{\"function\":{\"name\":\"x\"}}]}";
+        let rules = self.policy_cache.load();
+        let _ = self.unsafe_check.check(SAMPLE, &rules);
+        let found = self.secret_detector.check(SAMPLE);
+        let _ = self.secret_detector.to_verdict_and_edits(&found);
+        let _ = self.tool_use_detector.check(SAMPLE);
     }
 
     /// Run all fast-path checks sequentially. Short-circuits on block.
@@ -68,24 +89,55 @@ impl FastPathEngine {
         let mut verdicts: Vec<FastPathVerdict> = Vec::new();
         let mut edits: Vec<ResponseEdit> = Vec::new();
         let mut worst_outcome = Outcome::Pass;
+        // Wall time of every check that ran, pass or not, keyed by check name.
+        let mut timings: Vec<CheckTiming> = Vec::new();
+        macro_rules! done {
+            ($has_tool_use:expr) => {
+                return FastPathResult {
+                    outcome: worst_outcome,
+                    edits,
+                    verdicts,
+                    has_tool_use: $has_tool_use,
+                    check_timings: timings,
+                }
+            };
+        }
+        // Run one check, record its timing, and stamp the timing on its verdict.
+        macro_rules! timed {
+            ($name:literal, $body:expr) => {{
+                let t = Instant::now();
+                let out = $body;
+                let ms = elapsed_ms(t);
+                timings.push(CheckTiming { check_name: $name, duration_ms: ms });
+                out.map(|mut v: FastPathVerdict| {
+                    v.duration_ms = ms;
+                    v
+                })
+            }};
+        }
 
         // --- Check 1: Unsafe content (cheapest, most critical — check first) ---
-        if let Some(verdict) = self.unsafe_check.check(response_body, &rules) {
+        if let Some(verdict) = timed!("unsafe_content", self.unsafe_check.check(response_body, &rules)) {
             worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
             if verdict.outcome == Outcome::Block {
                 verdicts.push(verdict);
-                return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
+                done!(false);
             }
             verdicts.push(verdict);
         }
 
         if start.elapsed().as_millis() > FAST_PATH_BUDGET_MS {
-            return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
+            done!(false);
         }
 
         // --- Check 2: Secret/PII detection ---
-        let secret_result = self.secret_detector.check(response_body);
-        let (secret_verdict, secret_edits) = self.secret_detector.to_verdict_and_edits(&secret_result);
+        let secret_edits;
+        let secret_verdict = timed!("secret_detection", {
+            let secret_result = self.secret_detector.check(response_body);
+            let (verdict, found_edits) = self.secret_detector.to_verdict_and_edits(&secret_result);
+            secret_edits = found_edits;
+            verdict
+        });
         if let Some(verdict) = secret_verdict {
             worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
             verdicts.push(verdict);
@@ -93,47 +145,54 @@ impl FastPathEngine {
         }
 
         if start.elapsed().as_millis() > FAST_PATH_BUDGET_MS {
-            return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
+            done!(false);
         }
 
         // --- Check 3: Cost cap enforcement ---
-        if let Some(verdict) = self.cost_cap.check(token_count_output, &rules) {
+        if let Some(verdict) = timed!("cost_cap", self.cost_cap.check(token_count_output, &rules)) {
             worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
             if verdict.outcome == Outcome::Block {
                 verdicts.push(verdict);
-                return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
+                done!(false);
             }
             verdicts.push(verdict);
         }
 
         if start.elapsed().as_millis() > FAST_PATH_BUDGET_MS {
-            return FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use: false };
+            done!(false);
         }
 
         // --- Check 4: Retry/loop detection ---
         if let Some(key) = session_key {
-            if let Some(verdict) = self.retry_detector.check(key, &rules) {
+            if let Some(verdict) = timed!("retry_detection", self.retry_detector.check(key, &rules)) {
                 worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
                 verdicts.push(verdict);
             }
         }
 
         // --- Check 5: Tool/function call detection (agent risk) ---
-        let tool_result = self.tool_use_detector.check(response_body);
-        let has_tool_use = tool_result.has_tool_use;
-        if let Some(verdict) = tool_result.verdict {
+        let has_tool_use;
+        let tool_verdict = timed!("tool_use_detection", {
+            let tool_result = self.tool_use_detector.check(response_body);
+            has_tool_use = tool_result.has_tool_use;
+            tool_result.verdict
+        });
+        if let Some(verdict) = tool_verdict {
             worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
             verdicts.push(verdict);
         }
 
         // --- Check 6: Session risk accumulator (multi-turn compounding risk) ---
         if let Some(key) = session_key {
-            // Record risk event if any non-pass verdict was issued
-            if worst_outcome != Outcome::Pass {
-                self.session_risk.record_risk_event(key);
-            }
-            // Check if session has accumulated too many risk events
-            if let Some(verdict) = self.session_risk.check(key) {
+            let session_verdict = timed!("session_risk", {
+                // Record risk event if any non-pass verdict was issued
+                if worst_outcome != Outcome::Pass {
+                    self.session_risk.record_risk_event(key);
+                }
+                // Check if session has accumulated too many risk events
+                self.session_risk.check(key)
+            });
+            if let Some(verdict) = session_verdict {
                 worst_outcome = Outcome::worst(worst_outcome, verdict.outcome);
                 verdicts.push(verdict);
             }
@@ -147,7 +206,7 @@ impl FastPathEngine {
             }
         }
 
-        FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use }
+        FastPathResult { outcome: worst_outcome, edits, verdicts, has_tool_use, check_timings: timings }
     }
 
     /// Periodic cleanup of retry detection state.
@@ -161,6 +220,16 @@ pub struct FastPathResult {
     pub edits: Vec<ResponseEdit>,
     pub verdicts: Vec<FastPathVerdict>,
     pub has_tool_use: bool,
+    /// Duration of every check that ran (including passes), in run order.
+    pub check_timings: Vec<CheckTiming>,
+}
+
+/// Wall time of one fast-path check. Names match the dashboard's check list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckTiming {
+    pub check_name: &'static str,
+    /// Fractional milliseconds (microsecond resolution).
+    pub duration_ms: f64,
 }
 
 #[derive(Clone)]
@@ -176,7 +245,7 @@ pub struct FastPathVerdict {
     pub outcome: Outcome,
     pub confidence: f32,
     pub reason: String,
-    pub duration_ms: u32,
+    pub duration_ms: f64,
 }
 
 #[cfg(test)]
@@ -276,5 +345,28 @@ mod tests {
         let _ = engine.evaluate(&body);
         let elapsed = start.elapsed().as_millis();
         assert!(elapsed < 50, "Fast path took {}ms, budget is 25ms", elapsed);
+    }
+
+    #[test]
+    fn times_every_check_including_passes() {
+        let engine = engine_with_defaults();
+        let result = engine.evaluate_with_context("Hello! The answer is 42.", Some(10), Some(7));
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert!(result.verdicts.is_empty());
+        let names: Vec<_> = result.check_timings.iter().map(|t| t.check_name).collect();
+        assert_eq!(
+            names,
+            ["unsafe_content", "secret_detection", "cost_cap", "retry_detection", "tool_use_detection", "session_risk"]
+        );
+        assert!(result.check_timings.iter().all(|t| t.duration_ms >= 0.0 && t.duration_ms < 50.0));
+    }
+
+    #[test]
+    fn verdict_carries_its_check_timing() {
+        let engine = engine_with_cap(100);
+        let result = engine.evaluate_with_context("Hello", Some(500), None);
+        let verdict = result.verdicts.iter().find(|v| v.check_name == "cost_cap").unwrap();
+        let timing = result.check_timings.iter().find(|t| t.check_name == "cost_cap").unwrap();
+        assert_eq!(verdict.duration_ms, timing.duration_ms);
     }
 }

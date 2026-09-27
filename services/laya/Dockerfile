@@ -11,6 +11,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# CPU-only PyTorch first. The default PyPI wheel bundles the NVIDIA CUDA stack
+# (cuDNN, cuBLAS, … several GB) that this CPU container (LAYA_DEVICE=cpu) never uses;
+# with torch already satisfied, laya's dependency resolution keeps this build.
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+
 # `laya[serve]` pulls the serve extras (HTTP server). Pinned to the 0.3 line, which is
 # the release that ships the Jev-compatible endpoint and the faster checkpoint loading.
 RUN pip install --no-cache-dir "laya[serve]>=0.3.11"

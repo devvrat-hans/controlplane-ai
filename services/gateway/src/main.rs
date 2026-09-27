@@ -20,7 +20,7 @@ use controlplane_shadow_analysis::{
     spawn_calibration_reloader, spawn_toggle_reloader, CalibrationStore, ShadowConfig,
     ShadowWorker, ToggleStore,
 };
-use controlplane_decision::{spawn_verdict_collector, DecisionServiceState, VerdictAggregator, PolicyEngine};
+use controlplane_decision::{spawn_shadow_run_collector, spawn_verdict_collector, DecisionServiceState, VerdictAggregator, PolicyEngine};
 use controlplane_cost_accounting::spawn_cost_tracker;
 use controlplane_escalation::spawn_escalation_listener;
 use controlplane_notification::spawn_notification_worker;
@@ -142,7 +142,6 @@ async fn main() -> Result<()> {
         subscriber.clone(),
         shutdown_rx.clone(),
         Some(verdict_store.clone()),
-        pool.clone(),
     );
 
     let dashboard_state = DashboardState {
@@ -234,6 +233,7 @@ async fn main() -> Result<()> {
             publisher: publisher.clone(),
         });
         spawn_verdict_collector(decision_state, subscriber.clone(), shutdown_rx.clone());
+        spawn_shadow_run_collector(db_pool.clone(), subscriber.clone(), shutdown_rx.clone());
         info!("Decision verdict collector started");
 
         // Cost tracking worker

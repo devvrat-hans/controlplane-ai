@@ -40,9 +40,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
         read_tool("get_feedback_effectiveness", "Feedback-loop effectiveness: resolutions, trends, agreement.", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("get_judge_agreement", "Hybrid judge coverage and disagreement versus the heuristics.", json!({"type":"object","properties":{"days":{"type":"integer","minimum":1,"maximum":90}},"additionalProperties":false})),
         read_tool("get_latency_timeseries", "Hourly fast-path latency buckets (avg and p99).", json!({"type":"object","properties":{},"additionalProperties":false})),
-        read_tool("get_cost_summary", "Token and cost summary with per-model breakdown.", json!({"type":"object","properties":{},"additionalProperties":false})),
-        read_tool("get_cost_timeseries", "Hourly token usage and request counts.", json!({"type":"object","properties":{},"additionalProperties":false})),
-        read_tool("get_cost_anomalies", "Cost anomalies detected against the per-app baseline.", json!({"type":"object","properties":{},"additionalProperties":false})),
+        read_tool("get_cost_summary", "Spend summary (flat $1 per request): last 24h, 7-day, all-time, peak hour, per-model and per-app breakdown.", json!({"type":"object","properties":{},"additionalProperties":false})),
+        read_tool("get_cost_timeseries", "Hourly requests, tokens and spend for the last 24 hours.", json!({"type":"object","properties":{},"additionalProperties":false})),
+        read_tool("get_cost_daily", "Daily requests, tokens and spend for the last 30 days (idle days included as zero).", json!({"type":"object","properties":{},"additionalProperties":false})),
+        read_tool("get_cost_anomalies", "Spend anomalies per app: hourly spike, request burst, daily spend above average, daily budget, token surge.", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("list_escalations", "List human-review cases.", json!({"type":"object","properties":{"status":{"type":"string","enum":["open","in_review","resolved","all_open"]},"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0}},"additionalProperties":false})),
         read_tool("get_session_thread", "Full multi-turn conversation thread for a call.", json!({"type":"object","properties":{"call_id":{"type":"string"}},"required":["call_id"],"additionalProperties":false})),
         read_tool("get_precedents", "Reviewer precedents most similar to a call or escalation.", json!({"type":"object","properties":{"call_id":{"type":"string"},"escalation_id":{"type":"string"}},"additionalProperties":false})),
@@ -160,6 +161,7 @@ pub fn capability_for(name: &str) -> Option<Capability> {
         | "get_latency_timeseries"
         | "get_cost_summary"
         | "get_cost_timeseries"
+        | "get_cost_daily"
         | "get_cost_anomalies"
         | "list_escalations"
         | "get_session_thread"
@@ -295,6 +297,11 @@ pub async fn call_tool(name: &str, args: &Value, ctx: &ToolContext<'_>) -> Resul
         "get_cost_timeseries" => {
             ctx.client
                 .dashboard_get("/api/v1/cost/timeseries", &[], c)
+                .await
+        }
+        "get_cost_daily" => {
+            ctx.client
+                .dashboard_get("/api/v1/cost/daily", &[], c)
                 .await
         }
         "get_cost_anomalies" => {

@@ -11,4 +11,4 @@ pub use aggregator::{
 pub use feedback::{annotate_from_precedents, find_similar_precedents, Precedent};
 pub use policy::{PolicyEngine, ResolvedPolicy};
 pub use policy_api::{policy_crud_router, PolicyApiState};
-pub use router::{decision_router, spawn_verdict_collector, DecisionServiceState};
+pub use router::{decision_router, spawn_shadow_run_collector, spawn_verdict_collector, DecisionServiceState};

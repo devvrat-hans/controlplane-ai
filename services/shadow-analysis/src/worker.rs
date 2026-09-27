@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use tracing::{debug, error, info, warn};
 
-use controlplane_common::events::{subjects, EventEnvelope, ShadowAnalysisRequest, VerdictPayload};
+use controlplane_common::events::{
+    subjects, EventEnvelope, ShadowAnalysisRequest, ShadowCheckRun, ShadowCheckStatus, ShadowCompletedPayload,
+    VerdictPayload,
+};
 use controlplane_common::models::Verdict;
 use controlplane_common::{create_provider, provider::UpstreamProvider};
 use controlplane_common::types::{Outcome, Path as VerdictPath};
@@ -158,109 +161,99 @@ async fn process_message(
             provider.extract_context(&bytes)
         });
 
-    // Run all enabled checks in parallel (disabled checks are skipped entirely)
-    let config_clone = config.clone();
-    let response_clone = response_text.clone();
-    let context_clone = context_text.clone();
-    let groundedness_handle = if toggles.groundedness {
-        Some(tokio::spawn(async move {
-            let checker = GroundednessChecker::new(config_clone.groundedness_threshold);
-            checker.check(&response_clone, context_clone.as_deref())
+    // Launch every check as a timed task, or record why it was not started.
+    // Disabled checks are still skipped entirely — they just leave a run record now.
+    let groundedness: Launch<_> = if toggles.groundedness {
+        let config = config.clone();
+        let response = response_text.clone();
+        let context = context_text.clone();
+        Ok(spawn_timed(async move {
+            GroundednessChecker::new(config.groundedness_threshold).check(&response, context.as_deref())
         }))
-    } else { None };
+    } else { Err(DISABLED_BY_POLICY.to_string()) };
 
-    let config_clone = config.clone();
-    let response_clone = response_text.clone();
-    let bias_handle = if toggles.bias_classification {
-        Some(tokio::spawn(async move {
-            let classifier = BiasClassifier::new(config_clone.bias_threshold);
-            classifier.check(&response_clone)
-        }))
-    } else { None };
+    let bias: Launch<_> = if toggles.bias_classification {
+        let config = config.clone();
+        let response = response_text.clone();
+        Ok(spawn_timed(async move { BiasClassifier::new(config.bias_threshold).check(&response) }))
+    } else { Err(DISABLED_BY_POLICY.to_string()) };
 
-    let config_clone = config.clone();
-    let response_clone = response_text.clone();
-    let prompt_clone = prompt_text.clone();
-    let verbosity_handle = if toggles.verbosity {
-        Some(tokio::spawn(async move {
-            let checker = VerbosityChecker::new(config_clone.verbosity_max_ratio, config_clone.verbosity_min_density);
-            checker.check(&response_clone, &prompt_clone)
+    let verbosity: Launch<_> = if toggles.verbosity {
+        let config = config.clone();
+        let response = response_text.clone();
+        let prompt = prompt_text.clone();
+        Ok(spawn_timed(async move {
+            VerbosityChecker::new(config.verbosity_max_ratio, config.verbosity_min_density).check(&response, &prompt)
         }))
-    } else { None };
+    } else { Err(DISABLED_BY_POLICY.to_string()) };
 
     // Prompt injection detection (runs on the INPUT prompt)
-    let config_clone = config.clone();
-    let prompt_clone = prompt_text.clone();
-    let prompt_injection_handle = if toggles.prompt_injection {
-        Some(tokio::spawn(async move {
-            let detector = PromptInjectionDetector::new(&config_clone);
-            let result = detector.check(&prompt_clone);
+    let prompt_injection: Launch<_> = if toggles.prompt_injection {
+        let config = config.clone();
+        let prompt = prompt_text.clone();
+        Ok(spawn_timed(async move {
+            let detector = PromptInjectionDetector::new(&config);
+            let result = detector.check(&prompt);
             detector.to_verdict(&result)
         }))
-    } else { None };
+    } else { Err(DISABLED_BY_POLICY.to_string()) };
 
-    let config_clone = config.clone();
-    let response_clone = response_text.clone();
-    let semantic_pii_handle = if toggles.semantic_pii {
-        Some(tokio::spawn(async move {
-            let detector = SemanticPiiDetector::new(
-                config_clone.semantic_pii_min_identifiers,
-                config_clone.semantic_pii_risk_threshold,
-            );
-            detector.check(&response_clone)
+    let semantic_pii: Launch<_> = if toggles.semantic_pii {
+        let config = config.clone();
+        let response = response_text.clone();
+        Ok(spawn_timed(async move {
+            SemanticPiiDetector::new(config.semantic_pii_min_identifiers, config.semantic_pii_risk_threshold)
+                .check(&response)
         }))
-    } else { None };
+    } else { Err(DISABLED_BY_POLICY.to_string()) };
 
-    // Run guardrails sidecar checks on RESPONSE (Presidio PII + LLM Guard Toxicity/Bias)
-    let guardrails_pii_handle = if config.pii_enabled && toggles.pii_detection {
-        if let Some(ref url) = config.guardrails_url {
-            let client = GuardrailsClient::new(url);
-            let text = response_text.clone();
-            Some(tokio::spawn(async move { client.scan_pii(&text).await }))
-        } else { None }
-    } else { None };
+    // Guardrails sidecar gate: server switch, then per-app toggle, then a configured URL.
+    let sidecar = |server_on: bool, toggle_on: bool| -> Result<GuardrailsClient, String> {
+        if !server_on {
+            return Err("disabled in server config".to_string());
+        }
+        if !toggle_on {
+            return Err(DISABLED_BY_POLICY.to_string());
+        }
+        config.guardrails_url.as_deref().map(GuardrailsClient::new).ok_or_else(|| NO_SIDECAR.to_string())
+    };
 
-    let guardrails_toxicity_handle = if config.toxicity_enabled && toggles.toxicity_detection {
-        if let Some(ref url) = config.guardrails_url {
-            let client = GuardrailsClient::new(url);
-            let text = response_text.clone();
-            let prompt = prompt_text.clone();
-            Some(tokio::spawn(async move { client.scan_toxicity(&text, Some(&prompt)).await }))
-        } else { None }
-    } else { None };
+    // Guardrails checks on the RESPONSE (Presidio PII + LLM Guard toxicity). Bias is
+    // input-only: on responses it over-fires (opinionated != biased).
+    let pii: Launch<_> = sidecar(config.pii_enabled, toggles.pii_detection).map(|client| {
+        let text = response_text.clone();
+        spawn_timed(async move { client.scan_pii(&text).await })
+    });
 
-    // Bias on response text produces too many false positives (opinionated != biased).
-    // Only scan inputs for bias; response bias is caught by the input_bias_handle below.
-    let guardrails_bias_handle: Option<tokio::task::JoinHandle<Option<ShadowVerdict>>> = None;
+    let toxicity: Launch<_> = sidecar(config.toxicity_enabled, toggles.toxicity_detection).map(|client| {
+        let text = response_text.clone();
+        let prompt = prompt_text.clone();
+        spawn_timed(async move { client.scan_toxicity(&text, Some(&prompt)).await })
+    });
 
-    // DeepEval hallucination check (compares response against context)
-    let guardrails_hallucination_handle = if toggles.hallucination {
-        if let Some(ref ctx) = context_text {
-        if let Some(ref url) = config.guardrails_url {
-            let client = GuardrailsClient::new(url);
-            let text = response_text.clone();
-            let context = ctx.clone();
-            Some(tokio::spawn(async move { client.scan_hallucination(&text, Some(&context)).await }))
-        } else { None }
-    } else { None }
-    } else { None };
+    // DeepEval hallucination check (compares response against grounding context)
+    let hallucination: Launch<_> = sidecar(true, toggles.hallucination).and_then(|client| {
+        let context = context_text.clone().ok_or_else(|| "no grounding context in request".to_string())?;
+        let text = response_text.clone();
+        Ok(spawn_timed(async move { client.scan_hallucination(&text, Some(&context)).await }))
+    });
 
     // Also scan the INPUT prompt for toxicity/bias (catches inappropriate prompts)
-    let input_toxicity_handle = if config.toxicity_enabled && toggles.toxicity_detection && !prompt_text.is_empty() {
-        if let Some(ref url) = config.guardrails_url {
-            let client = GuardrailsClient::new(url);
-            let text = prompt_text.clone();
-            Some(tokio::spawn(async move { client.scan_toxicity(&text, None).await }))
-        } else { None }
-    } else { None };
+    let input_toxicity: Launch<_> = sidecar(config.toxicity_enabled, toggles.toxicity_detection).and_then(|client| {
+        if prompt_text.is_empty() {
+            return Err(NO_PROMPT.to_string());
+        }
+        let text = prompt_text.clone();
+        Ok(spawn_timed(async move { client.scan_toxicity(&text, None).await }))
+    });
 
-    let input_bias_handle = if config.bias_enabled && toggles.bias_detection && !prompt_text.is_empty() {
-        if let Some(ref url) = config.guardrails_url {
-            let client = GuardrailsClient::new(url);
-            let text = prompt_text.clone();
-            Some(tokio::spawn(async move { client.scan_bias(&text, None).await }))
-        } else { None }
-    } else { None };
+    let input_bias: Launch<_> = sidecar(config.bias_enabled, toggles.bias_detection).and_then(|client| {
+        if prompt_text.is_empty() {
+            return Err(NO_PROMPT.to_string());
+        }
+        let text = prompt_text.clone();
+        Ok(spawn_timed(async move { client.scan_bias(&text, None).await }))
+    });
 
     // Decision-model judge (Laya / Jev): every governance question in ONE batched call.
     //
@@ -271,7 +264,11 @@ async fn process_message(
     // The judge never blocks delivery and never makes the final decision — it only emits
     // per-check scores that the decision engine aggregates. Any failure yields no
     // verdicts (absence of a shadow verdict means pass).
-    let laya_handle = if config.decision_judge_enabled && toggles.decision_judge {
+    let judge: Launch<_> = if !config.decision_judge_enabled {
+        Err("decision judge off (DECISION_JUDGE unset)".to_string())
+    } else if !toggles.decision_judge {
+        Err(DISABLED_BY_POLICY.to_string())
+    } else {
         match config.laya_url.as_ref() {
             Some(url) => {
                 let client = LayaClient::new(
@@ -287,108 +284,83 @@ async fn process_message(
                 let prompt = prompt_text.clone();
                 let context = context_text.clone();
 
-                Some(tokio::spawn(async move {
+                Ok(spawn_timed(async move {
                     let state = GovernanceState::new(&response, &prompt, context.as_deref());
-                    client.evaluate(&state).await
+                    client.evaluate_detailed(&state).await
                 }))
             }
             None => {
                 warn!("Decision judge enabled but LAYA_URL is not set — skipping the judge");
-                None
+                Err("LAYA_URL not set".to_string())
             }
         }
-    } else {
-        None
     };
 
-    // Collect all results
+    // Collect all results. Every check leaves exactly one run record; a verdict is
+    // emitted only when a check found something. Verdict durations are the task's
+    // wall time, measured the same way for every check.
     let mut verdicts: Vec<ShadowVerdict> = Vec::new();
+    let mut runs: Vec<ShadowCheckRun> = Vec::new();
 
-    if let Some(handle) = groundedness_handle {
-        if let Ok(result) = handle.await {
-            if let Some(v) = result.verdict {
-                verdicts.push(v);
+    if let Some((result, ms)) = finish("groundedness", groundedness, &mut runs).await {
+        runs.push(ran("groundedness", ms));
+        push_verdict(&mut verdicts, result.verdict, ms);
+    }
+    if let Some((result, ms)) = finish("bias_classification", bias, &mut runs).await {
+        runs.push(ran("bias_classification", ms));
+        push_verdict(&mut verdicts, result.verdict, ms);
+    }
+    if let Some((result, ms)) = finish("verbosity", verbosity, &mut runs).await {
+        runs.push(ran("verbosity", ms));
+        push_verdict(&mut verdicts, result.verdict, ms);
+    }
+    if let Some((verdict, ms)) = finish("prompt_injection", prompt_injection, &mut runs).await {
+        runs.push(ran("prompt_injection", ms));
+        push_verdict(&mut verdicts, verdict, ms);
+    }
+    if let Some((result, ms)) = finish("semantic_pii", semantic_pii, &mut runs).await {
+        runs.push(ran("semantic_pii", ms));
+        push_verdict(&mut verdicts, result.verdict, ms);
+    }
+
+    for (name, launch, input_label) in [
+        ("pii", pii, None),
+        ("toxicity", toxicity, None),
+        ("hallucination", hallucination, None),
+        ("input_toxicity", input_toxicity, Some("input-toxicity")),
+        ("input_bias", input_bias, Some("input-bias")),
+    ] {
+        let Some((scan, ms)) = finish(name, launch, &mut runs).await else { continue };
+        match scan {
+            Ok(verdict) => {
+                runs.push(ran(name, ms));
+                // Input-side scans are renamed so they read as prompt findings.
+                let verdict = verdict.map(|mut v| {
+                    if let Some(label) = input_label {
+                        v.check_name = label.to_string();
+                        v.reason = format!("Input: {}", v.reason);
+                    }
+                    v
+                });
+                push_verdict(&mut verdicts, verdict, ms);
             }
-        }
-    }
-
-    if let Some(handle) = bias_handle {
-        if let Ok(result) = handle.await {
-            if let Some(v) = result.verdict {
-                verdicts.push(v);
-            }
-        }
-    }
-
-    if let Some(handle) = verbosity_handle {
-        if let Ok(result) = handle.await {
-            if let Some(v) = result.verdict {
-                verdicts.push(v);
-            }
-        }
-    }
-
-    if let Some(handle) = prompt_injection_handle {
-        if let Ok(Some(v)) = handle.await {
-            verdicts.push(v);
-        }
-    }
-
-    if let Some(handle) = semantic_pii_handle {
-        if let Ok(result) = handle.await {
-            if let Some(v) = result.verdict {
-                verdicts.push(v);
-            }
-        }
-    }
-
-    // Collect guardrails sidecar results
-    if let Some(handle) = guardrails_pii_handle {
-        if let Ok(Some(v)) = handle.await {
-            verdicts.push(v);
-        }
-    }
-
-    if let Some(handle) = guardrails_toxicity_handle {
-        if let Ok(Some(v)) = handle.await {
-            verdicts.push(v);
-        }
-    }
-
-    if let Some(handle) = guardrails_bias_handle {
-        if let Ok(Some(v)) = handle.await {
-            verdicts.push(v);
-        }
-    }
-
-    if let Some(handle) = guardrails_hallucination_handle {
-        if let Ok(Some(v)) = handle.await {
-            verdicts.push(v);
-        }
-    }
-
-    // Collect input-side guardrails results (rename check for clarity)
-    if let Some(handle) = input_toxicity_handle {
-        if let Ok(Some(mut v)) = handle.await {
-            v.check_name = "input-toxicity".to_string();
-            v.reason = format!("Input: {}", v.reason);
-            verdicts.push(v);
-        }
-    }
-
-    if let Some(handle) = input_bias_handle {
-        if let Ok(Some(mut v)) = handle.await {
-            v.check_name = "input-bias".to_string();
-            v.reason = format!("Input: {}", v.reason);
-            verdicts.push(v);
+            Err(e) => runs.push(run_record(name, ShadowCheckStatus::Error, Some(ms), Some(e))),
         }
     }
 
     // Decision-model judge verdicts. A failed or timed-out task contributes nothing.
-    if let Some(handle) = laya_handle {
-        match handle.await {
-            Ok(laya_verdicts) => verdicts.extend(laya_verdicts),
-            Err(e) => warn!(error = %e, "Laya judge task failed — FAIL OPEN"),
+    if let Some((judged, ms)) = finish("decision_judge", judge, &mut runs).await {
+        match judged {
+            Ok(judge_verdicts) => {
+                runs.push(ran("decision_judge", ms));
+                for v in judge_verdicts {
+                    push_verdict(&mut verdicts, Some(v), ms);
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Laya judge unavailable — FAIL OPEN");
+                runs.push(run_record("decision_judge", ShadowCheckStatus::Error, Some(ms), Some(e)));
+            }
         }
     }
 
@@ -399,6 +371,9 @@ async fn process_message(
             dropped,
             "Superseded keyword PII heuristic by a stronger PII detector"
         );
+        if let Some(run) = runs.iter_mut().find(|r| r.check_name == "semantic_pii") {
+            run.detail = Some("finding superseded by a stronger PII detector".to_string());
+        }
     }
 
     // Publish each verdict
@@ -411,7 +386,7 @@ async fn process_message(
             shadow_verdict.confidence,
             &shadow_verdict.reason,
             &shadow_verdict.check_name,
-        ).with_duration(shadow_verdict.duration_ms as i32);
+        ).with_duration_precise(shadow_verdict.duration_ms);
 
         let payload = VerdictPayload { verdict };
         let envelope = EventEnvelope::new(
@@ -432,17 +407,91 @@ async fn process_message(
         }
     }
 
+    // Per-check run records (passes and skips included) for the request detail page.
+    let checks_run = runs.iter().filter(|r| r.status == ShadowCheckStatus::Ran).count();
+    let completed = EventEnvelope::new(
+        subjects::SHADOW_COMPLETED,
+        correlation_id,
+        envelope.app_id,
+        ShadowCompletedPayload { call_id: request.call_id, checks: runs },
+    );
+    if let Ok(bytes) = completed.to_bytes() {
+        if let Err(e) = publisher.publish(subjects::SHADOW_COMPLETED, &bytes).await {
+            warn!(error = %e, "Failed to publish shadow completion record");
+        }
+    }
+
     let worst_outcome = verdicts.iter()
         .map(|v| v.outcome)
         .fold(Outcome::Pass, Outcome::worst);
 
     info!(
         correlation_id = %correlation_id,
-        checks_run = 4,
+        checks_run,
         verdicts_produced = verdicts.len(),
         worst_outcome = %worst_outcome,
         "Shadow analysis complete"
     );
+}
+
+/// A started check (timed task) or the reason it was not started.
+type Launch<T> = Result<tokio::task::JoinHandle<(T, f64)>, String>;
+
+const DISABLED_BY_POLICY: &str = "disabled by policy";
+const NO_SIDECAR: &str = "guardrails sidecar not configured";
+const NO_PROMPT: &str = "no prompt text in request";
+
+/// Spawn a check and measure its wall time in fractional milliseconds.
+fn spawn_timed<F>(fut: F) -> tokio::task::JoinHandle<(F::Output, f64)>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(async move {
+        let start = std::time::Instant::now();
+        let out = fut.await;
+        (out, start.elapsed().as_secs_f64() * 1000.0)
+    })
+}
+
+fn run_record(name: &str, status: ShadowCheckStatus, ms: Option<f64>, detail: Option<String>) -> ShadowCheckRun {
+    ShadowCheckRun {
+        check_name: name.to_string(),
+        status,
+        duration_us: ms.map(|ms| (ms.max(0.0) * 1000.0).round() as i64),
+        detail,
+    }
+}
+
+fn ran(name: &str, ms: f64) -> ShadowCheckRun {
+    run_record(name, ShadowCheckStatus::Ran, Some(ms), None)
+}
+
+/// Await a launch. Returns the output when the check ran; records a `Skipped`
+/// (not started) or `Error` (task panicked) run otherwise.
+async fn finish<T>(name: &str, launch: Launch<T>, runs: &mut Vec<ShadowCheckRun>) -> Option<(T, f64)> {
+    match launch {
+        Err(reason) => {
+            runs.push(run_record(name, ShadowCheckStatus::Skipped, None, Some(reason)));
+            None
+        }
+        Ok(handle) => match handle.await {
+            Ok(out) => Some(out),
+            Err(e) => {
+                warn!(check = name, error = %e, "Shadow check task failed — FAIL OPEN");
+                runs.push(run_record(name, ShadowCheckStatus::Error, None, Some("check task failed".to_string())));
+                None
+            }
+        },
+    }
+}
+
+/// Keep a finding, stamped with its check's measured wall time.
+fn push_verdict(verdicts: &mut Vec<ShadowVerdict>, verdict: Option<ShadowVerdict>, ms: f64) {
+    if let Some(mut v) = verdict {
+        v.duration_ms = ms;
+        verdicts.push(v);
+    }
 }
 
 /// Demote the `semantic_pii` keyword heuristic to a fallback.
@@ -492,7 +541,7 @@ mod tests {
             outcome,
             confidence: 0.8,
             reason: "test".to_string(),
-            duration_ms: 1,
+            duration_ms: 1.0,
         }
     }
 
@@ -549,6 +598,44 @@ mod tests {
         assert_eq!(demote_semantic_pii(&mut verdicts), None);
         assert_eq!(verdicts.len(), 1);
     }
+
+    #[tokio::test]
+    async fn skipped_check_records_its_reason() {
+        let mut runs = Vec::new();
+        let launch: Launch<u8> = Err(DISABLED_BY_POLICY.to_string());
+        assert!(finish("groundedness", launch, &mut runs).await.is_none());
+        assert_eq!(runs, vec![run_record("groundedness", ShadowCheckStatus::Skipped, None, Some(DISABLED_BY_POLICY.into()))]);
+    }
+
+    #[tokio::test]
+    async fn completed_check_returns_output_and_wall_time() {
+        let mut runs = Vec::new();
+        let launch: Launch<u8> = Ok(spawn_timed(async {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            7u8
+        }));
+        let (out, ms) = finish("verbosity", launch, &mut runs).await.unwrap();
+        assert_eq!(out, 7);
+        assert!(ms >= 5.0, "measured {ms}ms");
+        // `finish` leaves the success record to the caller (it may still be a scan error).
+        assert!(runs.is_empty());
+        assert_eq!(ran("verbosity", 1.2345).duration_us, Some(1235));
+    }
+
+    #[tokio::test]
+    async fn panicking_check_is_recorded_as_error() {
+        let mut runs = Vec::new();
+        let launch: Launch<u8> = Ok(spawn_timed(async { panic!("boom") }));
+        assert!(finish("bias_classification", launch, &mut runs).await.is_none());
+        assert_eq!(runs[0].status, ShadowCheckStatus::Error);
+    }
+
+    #[test]
+    fn verdict_takes_the_measured_duration() {
+        let mut verdicts = Vec::new();
+        push_verdict(&mut verdicts, Some(verdict("groundedness", Outcome::Escalate)), 3.25);
+        push_verdict(&mut verdicts, None, 9.0);
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].duration_ms, 3.25);
+    }
 }
-
-

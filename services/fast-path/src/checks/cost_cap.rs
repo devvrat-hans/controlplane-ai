@@ -18,7 +18,7 @@ impl CostCapCheck {
 
         let tokens = token_count_output?;
 
-        let duration_ms = start.elapsed().as_millis() as u32;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         if tokens > max_tokens {
             Some(FastPathVerdict {

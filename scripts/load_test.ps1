@@ -10,7 +10,7 @@
 param(
     [int]$TotalRequests = 100,
     [string]$ProxyUrl = "http://localhost:8900",
-    [int]$ConcurrentBatch = 5
+    [int]$ConcurrentBatch = 10
 )
 
 $ErrorActionPreference = "Continue"

@@ -20,7 +20,7 @@ pub struct SemanticPiiResult {
     pub quasi_identifiers_found: Vec<QuasiIdentifier>,
     pub risk_score: f32,
     pub verdict: Option<ShadowVerdict>,
-    pub duration_ms: u32,
+    pub duration_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -109,7 +109,7 @@ impl SemanticPiiDetector {
             (category_count / 4.0).min(1.0) // 4+ categories = max risk
         };
 
-        let duration_ms = start.elapsed().as_millis() as u32;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         let verdict = if categories_hit.len() >= self.min_quasi_identifiers && risk_score >= self.risk_threshold {
             let cats: Vec<&str> = categories_hit.into_iter().collect();

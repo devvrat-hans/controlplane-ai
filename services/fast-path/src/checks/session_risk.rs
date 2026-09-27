@@ -63,7 +63,7 @@ impl SessionRiskAccumulator {
             if now.duration_since(entry.first_seen) <= std::time::Duration::from_secs(SESSION_WINDOW_SECS)
                 && entry.risk_events >= SESSION_RISK_THRESHOLD
             {
-                let duration_ms = start.elapsed().as_millis() as u32;
+                let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
                 return Some(FastPathVerdict {
                     axis: Axis::Responsibility,
                     check_name: "session_risk_accumulator".to_string(),

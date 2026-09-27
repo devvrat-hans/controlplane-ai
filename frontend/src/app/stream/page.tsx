@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -101,6 +101,9 @@ export default function LiveStreamPage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const bufferRef = useRef<StreamVerdict[]>([]);
   const seenIdsRef = useRef<Set<string>>(new Set());
+  // Read inside the SSE handler so pausing doesn't recreate (and reconnect) the stream.
+  const pausedRef = useRef(false);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ─── 1. Load historical verdicts from DB on mount ───────────
   useEffect(() => {
@@ -133,52 +136,60 @@ export default function LiveStreamPage() {
   }, []);
 
   // ─── 2. Connect SSE for real-time updates ───────────────────
-  const connect = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    const es = new EventSource(`${API_BASE}/api/v1/verdicts/stream`);
-    eventSourceRef.current = es;
-
-    es.onopen = () => setConnected(true);
-    es.onerror = () => {
-      setConnected(false);
-      setTimeout(connect, 3000);
-    };
-
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as SseVerdict;
-        if (data.type === "verdict") {
-          const mapped = sseVerdictToStream(data);
-
-          // Deduplicate — skip if already loaded from DB
-          if (seenIdsRef.current.has(mapped.id)) return;
-          seenIdsRef.current.add(mapped.id);
-
-          bufferRef.current = [mapped, ...bufferRef.current].slice(0, 200);
-          if (!paused) {
-            setVerdicts((prev) => [mapped, ...prev].slice(0, 200));
-          }
-        }
-      } catch {
-        // ignore malformed events
-      }
-    };
-  }, [paused]);
-
   useEffect(() => {
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      eventSourceRef.current?.close();
+
+      const es = new EventSource(`${API_BASE}/api/v1/verdicts/stream`);
+      eventSourceRef.current = es;
+
+      es.onopen = () => setConnected(true);
+      es.onerror = () => {
+        setConnected(false);
+        // Close and retry on our own schedule; the timer is cleared on unmount so a
+        // pending retry can't open a stream that nothing will ever close.
+        es.close();
+        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = setTimeout(connect, 3000);
+      };
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as SseVerdict;
+          if (data.type === "verdict") {
+            const mapped = sseVerdictToStream(data);
+
+            // Deduplicate — skip if already loaded from DB
+            if (seenIdsRef.current.has(mapped.id)) return;
+            seenIdsRef.current.add(mapped.id);
+
+            bufferRef.current = [mapped, ...bufferRef.current].slice(0, 200);
+            if (!pausedRef.current) {
+              setVerdicts((prev) => [mapped, ...prev].slice(0, 200));
+            }
+          }
+        } catch {
+          // ignore malformed events
+        }
+      };
+    };
+
     connect();
     return () => {
+      disposed = true;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       eventSourceRef.current?.close();
     };
-  }, [connect]);
+  }, []);
 
   const togglePause = () => {
     if (paused) {
       setVerdicts(bufferRef.current);
     }
+    pausedRef.current = !paused;
     setPaused(!paused);
   };
 

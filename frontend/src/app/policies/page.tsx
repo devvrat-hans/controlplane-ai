@@ -141,22 +141,26 @@ export default function PoliciesPage() {
     const perf = (t.performance ?? {}) as Record<string, unknown>;
     const cost = (t.cost ?? {}) as Record<string, unknown>;
     const resp = (t.responsibility ?? {}) as Record<string, unknown>;
+    // Toggles saved from this page live in each axis's `checks` object.
+    const perfChecks = (perf.checks ?? {}) as Record<string, boolean | undefined>;
+    const respChecks = (resp.checks ?? {}) as Record<string, boolean | undefined>;
     setThresholds({
       block_threshold: (perf.block_threshold ?? resp.block_threshold ?? DEFAULT_THRESHOLDS.block_threshold) as number,
       escalate_threshold: (perf.escalate_threshold ?? resp.escalate_threshold ?? perf.groundedness_threshold ?? DEFAULT_THRESHOLDS.escalate_threshold) as number,
       max_tokens_per_request: (cost.max_tokens_per_request ?? DEFAULT_THRESHOLDS.max_tokens_per_request) as number,
       retry_max_count: (cost.retry_max ?? DEFAULT_THRESHOLDS.retry_max_count) as number,
-      pii_detection: (resp.pii_detection ?? DEFAULT_THRESHOLDS.pii_detection) as boolean,
-      toxicity_detection: (resp.toxicity_detection ?? DEFAULT_THRESHOLDS.toxicity_detection) as boolean,
-      bias_detection: (resp.bias_detection ?? DEFAULT_THRESHOLDS.bias_detection) as boolean,
-      unsafe_content_enabled: ((resp.unsafe_action ?? "block") !== "off") as boolean,
-      secret_detection_enabled: ((resp.pii_action ?? "edit") !== "off") as boolean,
-      prompt_injection_enabled: DEFAULT_THRESHOLDS.prompt_injection_enabled,
-      hallucination_detection_enabled: ((perf.hallucination_action ?? "escalate") !== "off") as boolean,
-      groundedness_enabled: DEFAULT_THRESHOLDS.groundedness_enabled,
-      verbosity_enabled: DEFAULT_THRESHOLDS.verbosity_enabled,
-      semantic_pii_enabled: DEFAULT_THRESHOLDS.semantic_pii_enabled,
-      decision_judge_enabled: DEFAULT_THRESHOLDS.decision_judge_enabled,
+      pii_detection: (respChecks.pii_detection ?? resp.pii_detection ?? DEFAULT_THRESHOLDS.pii_detection) as boolean,
+      toxicity_detection: (respChecks.toxicity_detection ?? resp.toxicity_detection ?? DEFAULT_THRESHOLDS.toxicity_detection) as boolean,
+      bias_detection: (respChecks.bias_detection ?? resp.bias_detection ?? DEFAULT_THRESHOLDS.bias_detection) as boolean,
+      unsafe_content_enabled: respChecks.unsafe_content_enabled ?? ((resp.unsafe_action ?? "block") !== "off"),
+      secret_detection_enabled: respChecks.secret_detection_enabled ?? ((resp.pii_action ?? "edit") !== "off"),
+      prompt_injection_enabled: respChecks.prompt_injection_enabled ?? DEFAULT_THRESHOLDS.prompt_injection_enabled,
+      hallucination_detection_enabled: perfChecks.hallucination_detection_enabled ?? ((perf.hallucination_action ?? "escalate") !== "off"),
+      groundedness_enabled: perfChecks.groundedness_enabled ?? DEFAULT_THRESHOLDS.groundedness_enabled,
+      verbosity_enabled: perfChecks.verbosity_enabled ?? DEFAULT_THRESHOLDS.verbosity_enabled,
+      semantic_pii_enabled: respChecks.semantic_pii_enabled ?? DEFAULT_THRESHOLDS.semantic_pii_enabled,
+      decision_judge_enabled:
+        perfChecks.decision_judge_enabled ?? respChecks.decision_judge_enabled ?? DEFAULT_THRESHOLDS.decision_judge_enabled,
     });
   };
 
@@ -256,6 +260,12 @@ export default function PoliciesPage() {
             hallucination_action: thresholds.hallucination_detection_enabled ? "escalate" : "off",
             block_threshold: thresholds.block_threshold,
             escalate_threshold: thresholds.escalate_threshold,
+            checks: {
+              groundedness_enabled: thresholds.groundedness_enabled,
+              hallucination_detection_enabled: thresholds.hallucination_detection_enabled,
+              verbosity_enabled: thresholds.verbosity_enabled,
+              decision_judge_enabled: thresholds.decision_judge_enabled,
+            },
           },
           cost: {
             max_tokens_per_request: thresholds.max_tokens_per_request,
@@ -267,6 +277,16 @@ export default function PoliciesPage() {
             unsafe_action: thresholds.unsafe_content_enabled ? "block" : "off",
             block_threshold: thresholds.block_threshold,
             escalate_threshold: thresholds.escalate_threshold,
+            checks: {
+              unsafe_content_enabled: thresholds.unsafe_content_enabled,
+              secret_detection_enabled: thresholds.secret_detection_enabled,
+              prompt_injection_enabled: thresholds.prompt_injection_enabled,
+              semantic_pii_enabled: thresholds.semantic_pii_enabled,
+              pii_detection: thresholds.pii_detection,
+              toxicity_detection: thresholds.toxicity_detection,
+              bias_detection: thresholds.bias_detection,
+              decision_judge_enabled: thresholds.decision_judge_enabled,
+            },
           },
         };
         const res = await fetch(`${API_BASE}/api/v1/profiles/${selectedProfile}`, {

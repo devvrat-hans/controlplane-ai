@@ -57,6 +57,9 @@ pub mod subjects {
     /// Published whenever a reviewer resolves an escalation — carries the captured
     /// precedent so other services can react to new learning data.
     pub const FEEDBACK_RECORDED: &str = "controlplane.feedback.recorded";
+    /// Published by shadow-analysis once every shadow check for a call has finished
+    /// (or been skipped) — carries a per-check run record so passes are visible too.
+    pub const SHADOW_COMPLETED: &str = "controlplane.shadow.completed";
 }
 
 // =============================================================================
@@ -87,6 +90,38 @@ pub struct ShadowAnalysisRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerdictPayload {
     pub verdict: Verdict,
+}
+
+/// How one shadow check fared for a call. Verdicts are only emitted for findings,
+/// so this is the only record of checks that ran and passed, or never ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShadowCheckRun {
+    /// Dashboard check name (e.g. `groundedness`, `pii`, `decision_judge`).
+    pub check_name: String,
+    pub status: ShadowCheckStatus,
+    /// Wall time of the check task in microseconds; `None` when it didn't run.
+    pub duration_us: Option<i64>,
+    /// Why it was skipped or failed, or a note such as "superseded by presidio-pii".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShadowCheckStatus {
+    /// Ran to completion. A verdict exists only if it found something.
+    Ran,
+    /// Not run (disabled by policy/config, sidecar not configured, no input).
+    Skipped,
+    /// Started but failed (sidecar unreachable, bad response, task panic) — fail open.
+    Error,
+}
+
+/// Published by shadow-analysis on [`subjects::SHADOW_COMPLETED`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShadowCompletedPayload {
+    pub call_id: Uuid,
+    pub checks: Vec<ShadowCheckRun>,
 }
 
 /// Published by the decision engine with the final aggregated outcome.
@@ -146,6 +181,7 @@ mod tests {
             reason: "Secret detected".into(),
             check_name: "secret_detection".into(),
             duration_ms: Some(3),
+            duration_us: Some(3_000),
             metadata: None,
             created_at: Utc::now(),
         };

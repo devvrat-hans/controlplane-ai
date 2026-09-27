@@ -1,5 +1,5 @@
-# Rust
-/target/
+# Rust (build output at any depth, e.g. services/*/target from criterion benches)
+target/
 **/*.rs.bk
 
 # Environment

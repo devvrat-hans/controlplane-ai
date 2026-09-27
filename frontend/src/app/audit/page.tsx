@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/select";
 import { fetchApi } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
@@ -351,7 +352,7 @@ function AuditRow({
                 <span className="text-muted-foreground">prev:</span>
                 <code className="break-all">{data.prev_hash}</code>
                 <button
-                  onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(data.prev_hash); }}
+                  onClick={(e) => { e.stopPropagation(); void copyText(data.prev_hash); }}
                   className="text-muted-foreground/50 hover:text-foreground shrink-0"
                   title="Copy"
                 >
@@ -362,7 +363,7 @@ function AuditRow({
                 <span className="text-muted-foreground">curr:</span>
                 <code className="break-all">{data.record_hash}</code>
                 <button
-                  onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(data.record_hash); }}
+                  onClick={(e) => { e.stopPropagation(); void copyText(data.record_hash); }}
                   className="text-muted-foreground/50 hover:text-foreground shrink-0"
                   title="Copy"
                 >

@@ -9,7 +9,7 @@ use sqlx::PgPool;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use controlplane_common::events::{subjects, DecisionPayload, EventEnvelope, VerdictPayload};
+use controlplane_common::events::{subjects, DecisionPayload, EventEnvelope, ShadowCompletedPayload, VerdictPayload};
 use controlplane_common::models::{Decision, Verdict};
 use controlplane_common::types::{AppId, Outcome};
 use controlplane_platform::messaging::{EventPublisher, EventSubscriber};
@@ -49,6 +49,8 @@ struct VerdictInput {
     reason: String,
     check_name: String,
     duration_ms: Option<i32>,
+    #[serde(default)]
+    duration_us: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -149,6 +151,7 @@ async fn aggregate_verdicts(
         if let Some(ms) = v.duration_ms {
             verdict = verdict.with_duration(ms);
         }
+        verdict.duration_us = v.duration_us;
         verdict
     }).collect();
 
@@ -356,8 +359,8 @@ async fn health() -> Json<serde_json::Value> {
 async fn persist_verdict(pool: &PgPool, verdict: &Verdict, app_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
-        INSERT INTO verdicts (id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, duration_ms, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        INSERT INTO verdicts (id, call_id, app_id, axis, path, outcome, confidence, reason, check_name, duration_ms, duration_us, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (id) DO NOTHING
         "#,
     )
@@ -371,6 +374,7 @@ async fn persist_verdict(pool: &PgPool, verdict: &Verdict, app_id: Uuid) -> Resu
     .bind(&verdict.reason)
     .bind(&verdict.check_name)
     .bind(verdict.duration_ms)
+    .bind(verdict.duration_us)
     .bind(verdict.created_at)
     .execute(pool)
     .await?;
@@ -424,4 +428,62 @@ pub fn spawn_verdict_collector(
             }
         }
     });
+}
+
+/// Persist the shadow path's per-check run records onto the call
+/// (`intercepted_calls.shadow_check_runs`). Verdicts only exist for findings, so
+/// this is what lets the dashboard show a duration for shadow checks that passed
+/// and "not run" (with the reason) for ones that were skipped.
+pub fn spawn_shadow_run_collector(
+    pool: PgPool,
+    subscriber: Arc<dyn EventSubscriber>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let mut receiver = match subscriber.subscribe(subjects::SHADOW_COMPLETED).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                error!(error = %e, "Decision service: failed to subscribe to shadow completion records");
+                return;
+            }
+        };
+
+        info!("Decision service: recording shadow check runs from '{}'", subjects::SHADOW_COMPLETED);
+
+        loop {
+            tokio::select! {
+                msg = receiver.recv() => {
+                    let Some(payload) = msg else {
+                        info!("Shadow run collector subscription closed");
+                        break;
+                    };
+                    let Ok(envelope) = serde_json::from_slice::<EventEnvelope<ShadowCompletedPayload>>(&payload) else {
+                        continue;
+                    };
+                    let runs = envelope.payload;
+                    match persist_shadow_runs(&pool, &runs).await {
+                        Ok(0) => debug!(call_id = %runs.call_id, "No intercepted call row for shadow run record"),
+                        Ok(_) => {}
+                        Err(e) => error!(error = %e, call_id = %runs.call_id, "Failed to persist shadow check runs"),
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        info!("Shadow run collector shutting down");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+async fn persist_shadow_runs(pool: &PgPool, runs: &ShadowCompletedPayload) -> Result<u64, sqlx::Error> {
+    let checks = serde_json::to_value(&runs.checks).unwrap_or(serde_json::Value::Null);
+    let result = sqlx::query("UPDATE intercepted_calls SET shadow_check_runs = $1 WHERE id = $2")
+        .bind(checks)
+        .bind(runs.call_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
 }

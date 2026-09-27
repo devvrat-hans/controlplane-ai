@@ -1,3 +1,6 @@
+//! Reference per-token list prices. Billing does NOT use these: every request is
+//! charged a flat `controlplane_common::COST_PER_REQUEST_USD` (see `ledger.rs`).
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

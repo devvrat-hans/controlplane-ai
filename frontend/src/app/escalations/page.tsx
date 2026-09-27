@@ -600,7 +600,7 @@ function CaseDetail({
                     </div>
                     {p.reviewer_reason && (
                       <p className="text-muted-foreground italic truncate">
-                        "{p.reviewer_reason}"
+                        &ldquo;{p.reviewer_reason}&rdquo;
                       </p>
                     )}
                   </div>

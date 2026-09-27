@@ -60,7 +60,7 @@ impl ToolUseDetector {
         let has_dangerous_action = !dangerous_directives.is_empty();
         let has_tool_use = has_structured_tool_use || has_dangerous_action;
 
-        let duration_ms = start.elapsed().as_millis() as u32;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         let verdict = if has_dangerous_action {
             Some(FastPathVerdict {

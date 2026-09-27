@@ -627,6 +627,7 @@ dependencies = [
  "chrono",
  "controlplane-common",
  "controlplane-platform",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

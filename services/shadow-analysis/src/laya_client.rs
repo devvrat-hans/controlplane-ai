@@ -309,6 +309,13 @@ impl LayaClient {
     ///
     /// Returns an empty list on any failure — fail-open by construction.
     pub async fn evaluate(&self, state: &GovernanceState) -> Vec<ShadowVerdict> {
+        self.evaluate_detailed(state).await.unwrap_or_default()
+    }
+
+    /// Like [`evaluate`](Self::evaluate), but reports a judge that never answered
+    /// (unreachable, timed out, bad response) as `Err` instead of an empty list, so the
+    /// caller can record the outage rather than mistake it for "no findings".
+    pub async fn evaluate_detailed(&self, state: &GovernanceState) -> Result<Vec<ShadowVerdict>, String> {
         let started = Instant::now();
         let deadline = started + Duration::from_millis(self.timeout_ms);
         let windows = state.windows();
@@ -335,7 +342,10 @@ impl LayaClient {
         }
 
         if answered.is_empty() {
-            return Vec::new();
+            return Err(format!(
+                "judge did not answer (unreachable, error, or over the {} ms budget)",
+                self.timeout_ms
+            ));
         }
 
         let merged = if answered.len() == 1 {
@@ -344,7 +354,7 @@ impl LayaClient {
             merge_answers(&answered, &self.calibration)
         };
 
-        let duration_ms = started.elapsed().as_millis() as u32;
+        let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
         debug!(
             answers = merged.len(),
             model = ?model,
@@ -354,14 +364,14 @@ impl LayaClient {
             "Laya judge complete"
         );
 
-        map_answers_calibrated(
+        Ok(map_answers_calibrated(
             &merged,
             state.has_context(),
             state.is_truncated(),
             duration_ms,
             &self.calibration,
             windows.len(),
-        )
+        ))
     }
 
     /// One HTTP round-trip for one window. `None` on any failure, after logging.
@@ -552,7 +562,7 @@ fn push_evidence(
     risk: f64,
     reason: &str,
     suffix: &str,
-    duration_ms: u32,
+    duration_ms: f64,
 ) {
     if !scale.emits_evidence || risk < EVIDENCE_THRESHOLD || risk >= EDIT_THRESHOLD {
         return;
@@ -575,7 +585,7 @@ pub fn map_answers(
     answers: &HashMap<String, LayaAnswer>,
     has_context: bool,
     truncated: bool,
-    duration_ms: u32,
+    duration_ms: f64,
 ) -> Vec<ShadowVerdict> {
     map_answers_calibrated(
         answers,
@@ -595,7 +605,7 @@ pub fn map_answers_calibrated(
     answers: &HashMap<String, LayaAnswer>,
     has_context: bool,
     truncated: bool,
-    duration_ms: u32,
+    duration_ms: f64,
     calibration: &Calibration,
     window_count: usize,
 ) -> Vec<ShadowVerdict> {
@@ -912,7 +922,7 @@ mod tests {
 
     #[test]
     fn empty_answers_produce_no_verdicts() {
-        assert!(map_answers(&HashMap::new(), true, false, 5).is_empty());
+        assert!(map_answers(&HashMap::new(), true, false, 5.0).is_empty());
     }
 
     #[test]
@@ -923,7 +933,7 @@ mod tests {
             (Q_TOOL_CALL_RISK, LayaAnswer::default()),
         ]);
 
-        let verdicts = map_answers(&answers, true, false, 5);
+        let verdicts = map_answers(&answers, true, false, 5.0);
         assert!(
             verdicts.is_empty(),
             "unusable answers must not invent verdicts"
@@ -948,7 +958,7 @@ mod tests {
     #[test]
     fn hallucination_escalates_above_threshold() {
         let answers = build(&[(Q_HALLUCINATION, ab(0.95))]);
-        let verdicts = map_answers(&answers, true, false, 7);
+        let verdicts = map_answers(&answers, true, false, 7.0);
 
         let verdict = find(&verdicts, "laya-hallucination").expect("verdict expected");
         assert_eq!(verdict.outcome, Outcome::Escalate);
@@ -959,7 +969,7 @@ mod tests {
     #[test]
     fn hallucination_edits_in_the_middle_band() {
         let answers = build(&[(Q_HALLUCINATION, ab(0.75))]);
-        let verdicts = map_answers(&answers, true, false, 7);
+        let verdicts = map_answers(&answers, true, false, 7.0);
 
         assert_eq!(
             find(&verdicts, "laya-hallucination").unwrap().outcome,
@@ -970,7 +980,7 @@ mod tests {
     #[test]
     fn hallucination_stays_silent_below_the_edit_threshold() {
         let answers = build(&[(Q_HALLUCINATION, ab(0.40))]);
-        let verdicts = map_answers(&answers, true, false, 7);
+        let verdicts = map_answers(&answers, true, false, 7.0);
 
         assert!(find(&verdicts, "laya-hallucination").is_none());
     }
@@ -981,7 +991,7 @@ mod tests {
             (Q_HALLUCINATION, ab(0.72)), // would only Edit on its own
             (Q_HALLUCINATION_SEVERITY, rubric(2.0, 0.9)),
         ]);
-        let verdicts = map_answers(&answers, true, false, 7);
+        let verdicts = map_answers(&answers, true, false, 7.0);
 
         assert_eq!(
             find(&verdicts, "laya-hallucination").unwrap().outcome,
@@ -995,7 +1005,7 @@ mod tests {
             (Q_HALLUCINATION, ab(0.99)),
             (Q_GROUNDEDNESS, rubric(0.0, 0.9)),
         ]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         assert!(find(&verdicts, "laya-hallucination").is_none());
         assert!(find(&verdicts, "laya-groundedness").is_none());
@@ -1004,14 +1014,14 @@ mod tests {
     #[test]
     fn groundedness_polarity_is_inverted() {
         let unsupported = build(&[(Q_GROUNDEDNESS, rubric(0.0, 0.9))]);
-        let verdicts = map_answers(&unsupported, true, false, 7);
+        let verdicts = map_answers(&unsupported, true, false, 7.0);
         assert_eq!(
             find(&verdicts, "laya-groundedness").unwrap().outcome,
             Outcome::Escalate
         );
 
         let well_supported = build(&[(Q_GROUNDEDNESS, rubric(2.0, 0.9))]);
-        let verdicts = map_answers(&well_supported, true, false, 7);
+        let verdicts = map_answers(&well_supported, true, false, 7.0);
         assert!(find(&verdicts, "laya-groundedness").is_none());
     }
 
@@ -1023,7 +1033,7 @@ mod tests {
             (Q_INJECTION_ATTEMPT, ab(0.94)),
             (Q_INJECTION_FAMILY, category("role_hijack", 0.8)),
         ]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-prompt-injection").expect("verdict expected");
         assert_eq!(verdict.outcome, Outcome::Escalate);
@@ -1041,7 +1051,7 @@ mod tests {
             (Q_INJECTION_ATTEMPT, ab(0.94)),
             (Q_INJECTION_FAMILY, category("other", 0.9)),
         ]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-prompt-injection").unwrap();
         assert!(
@@ -1056,7 +1066,7 @@ mod tests {
     #[test]
     fn destructive_tool_action_escalates() {
         let answers = build(&[(Q_TOOL_CALL_RISK, category("destructive", 0.91))]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         assert_eq!(
             find(&verdicts, "laya-tool-use").unwrap().outcome,
@@ -1068,14 +1078,14 @@ mod tests {
     fn medium_tool_action_edits_and_low_stays_silent() {
         let medium = build(&[(Q_TOOL_CALL_RISK, category("medium", 0.8))]);
         assert_eq!(
-            find(&map_answers(&medium, false, false, 7), "laya-tool-use")
+            find(&map_answers(&medium, false, false, 7.0), "laya-tool-use")
                 .unwrap()
                 .outcome,
             Outcome::Edit
         );
 
         let low = build(&[(Q_TOOL_CALL_RISK, category("low", 0.95))]);
-        assert!(find(&map_answers(&low, false, false, 7), "laya-tool-use").is_none());
+        assert!(find(&map_answers(&low, false, false, 7.0), "laya-tool-use").is_none());
     }
 
     // ── Bias / toxicity / PII ─────────────────────────────────────────────────────
@@ -1086,7 +1096,7 @@ mod tests {
             (Q_BIAS_PRESENT, ab(0.93)),
             (Q_BIAS_CATEGORY, category("gender", 0.7)),
         ]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-bias").unwrap();
         assert_eq!(verdict.axis, Axis::Responsibility);
@@ -1101,11 +1111,11 @@ mod tests {
     #[test]
     fn only_severe_toxicity_acts() {
         let mild = build(&[(Q_TOXICITY_SEVERITY, rubric(1.0, 0.9))]);
-        assert!(find(&map_answers(&mild, false, false, 7), "laya-toxicity").is_none());
+        assert!(find(&map_answers(&mild, false, false, 7.0), "laya-toxicity").is_none());
 
         let severe = build(&[(Q_TOXICITY_SEVERITY, rubric(2.0, 0.9))]);
         assert_eq!(
-            find(&map_answers(&severe, false, false, 7), "laya-toxicity")
+            find(&map_answers(&severe, false, false, 7.0), "laya-toxicity")
                 .unwrap()
                 .outcome,
             Outcome::Escalate
@@ -1118,7 +1128,7 @@ mod tests {
             (Q_IS_REIDENTIFIABLE, ab(0.88)),
             (Q_REID_TYPE, category("quasi", 0.6)),
         ]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-semantic-pii").unwrap();
         assert_eq!(verdict.axis, Axis::Responsibility);
@@ -1134,7 +1144,7 @@ mod tests {
     #[test]
     fn verbosity_is_capped_at_edit() {
         let answers = build(&[(Q_FILLER_RATIO, rubric(2.0, 0.95))]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-verbosity").unwrap();
         assert_eq!(verdict.outcome, Outcome::Edit, "padding must not escalate");
@@ -1153,7 +1163,7 @@ mod tests {
         };
 
         let answers = build(&[(Q_BIAS_PRESENT, answer)]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-bias").unwrap();
         assert!((verdict.confidence - 0.93).abs() < 0.001);
@@ -1162,7 +1172,7 @@ mod tests {
     #[test]
     fn truncated_input_is_disclosed_in_the_reason() {
         let answers = build(&[(Q_BIAS_PRESENT, ab(0.95))]);
-        let verdicts = map_answers(&answers, false, true, 7);
+        let verdicts = map_answers(&answers, false, true, 7.0);
 
         let verdict = find(&verdicts, "laya-bias").unwrap();
         assert!(
@@ -1185,7 +1195,7 @@ mod tests {
             (Q_FILLER_RATIO, rubric(2.0, 0.9)),
         ]);
 
-        let verdicts = map_answers(&answers, true, false, 7);
+        let verdicts = map_answers(&answers, true, false, 7.0);
         assert_eq!(verdicts.len(), 8, "one verdict per firing check");
 
         for verdict in &verdicts {
@@ -1202,7 +1212,7 @@ mod tests {
     #[test]
     fn sub_threshold_bias_is_published_as_evidence_only() {
         let answers = build(&[(Q_BIAS_PRESENT, ab(0.55))]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-bias-evidence").expect("evidence expected");
         assert_eq!(
@@ -1219,7 +1229,7 @@ mod tests {
     #[test]
     fn evidence_is_not_emitted_below_the_evidence_floor() {
         let answers = build(&[(Q_BIAS_PRESENT, ab(0.44))]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         assert!(find(&verdicts, "laya-bias-evidence").is_none());
         assert!(verdicts.is_empty());
@@ -1229,7 +1239,7 @@ mod tests {
     fn evidence_is_superseded_once_the_reading_acts() {
         // At/above the edit threshold the actionable verdict replaces the evidence one.
         let answers = build(&[(Q_BIAS_PRESENT, ab(0.72))]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         assert!(find(&verdicts, "laya-bias-evidence").is_none());
         assert_eq!(find(&verdicts, "laya-bias").unwrap().outcome, Outcome::Edit);
@@ -1243,7 +1253,7 @@ mod tests {
             (Q_FILLER_RATIO, rubric(1.0, 0.9)),
             (Q_TOOL_CALL_RISK, category("low", 0.6)),
         ]);
-        let verdicts = map_answers(&answers, false, false, 7);
+        let verdicts = map_answers(&answers, false, false, 7.0);
 
         assert!(verdicts.is_empty(), "unexpected verdicts: {verdicts:?}");
     }
@@ -1252,8 +1262,8 @@ mod tests {
     fn evidence_requires_context_for_context_checks() {
         let answers = build(&[(Q_HALLUCINATION, ab(0.55))]);
 
-        assert!(find(&map_answers(&answers, false, false, 7), "laya-hallucination-evidence").is_none());
-        assert!(find(&map_answers(&answers, true, false, 7), "laya-hallucination-evidence").is_some());
+        assert!(find(&map_answers(&answers, false, false, 7.0), "laya-hallucination-evidence").is_none());
+        assert!(find(&map_answers(&answers, true, false, 7.0), "laya-hallucination-evidence").is_some());
     }
 
     // ── Calibration ───────────────────────────────────────────────────────────────
@@ -1263,7 +1273,7 @@ mod tests {
         let answers = build(&[(Q_BIAS_PRESENT, ab(0.95))]);
 
         // Raw: 0.95 escalates.
-        let raw = map_answers(&answers, false, false, 7);
+        let raw = map_answers(&answers, false, false, 7.0);
         assert_eq!(find(&raw, "laya-bias").unwrap().outcome, Outcome::Escalate);
 
         // A fitted temperature of 2.5 pulls the same reading into the edit band without
@@ -1271,7 +1281,7 @@ mod tests {
         let mut calibration = Calibration::inert();
         calibration.insert_temperature("laya-bias", Primitive::Choice, 2, 2.5);
 
-        let calibrated = map_answers_calibrated(&answers, false, false, 7, &calibration, 1);
+        let calibrated = map_answers_calibrated(&answers, false, false, 7.0, &calibration, 1);
         let verdict = find(&calibrated, "laya-bias").unwrap();
         assert_eq!(verdict.outcome, Outcome::Edit);
         assert!(verdict.confidence < 0.95);
@@ -1285,8 +1295,8 @@ mod tests {
             (Q_GROUNDEDNESS, rubric(1.0, 0.8)),
         ]);
 
-        let baseline = map_answers(&answers, true, false, 7);
-        let inert = map_answers_calibrated(&answers, true, false, 7, &Calibration::inert(), 1);
+        let baseline = map_answers(&answers, true, false, 7.0);
+        let inert = map_answers_calibrated(&answers, true, false, 7.0, &Calibration::inert(), 1);
 
         assert_eq!(baseline.len(), inert.len());
         for (a, b) in baseline.iter().zip(inert.iter()) {
@@ -1314,7 +1324,7 @@ mod tests {
         ];
 
         let merged = merge_answers(&windows, &Calibration::inert());
-        let verdicts = map_answers(&merged, false, false, 7);
+        let verdicts = map_answers(&merged, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-bias").unwrap();
         assert_eq!(verdict.outcome, Outcome::Escalate);
@@ -1333,7 +1343,7 @@ mod tests {
         ];
 
         let merged = merge_answers(&windows, &Calibration::inert());
-        let verdicts = map_answers(&merged, true, false, 7);
+        let verdicts = map_answers(&merged, true, false, 7.0);
 
         assert_eq!(
             find(&verdicts, "laya-groundedness").unwrap().outcome,
@@ -1349,7 +1359,7 @@ mod tests {
         ];
 
         let merged = merge_answers(&windows, &Calibration::inert());
-        let verdicts = map_answers(&merged, false, false, 7);
+        let verdicts = map_answers(&merged, false, false, 7.0);
 
         let verdict = find(&verdicts, "laya-tool-use").unwrap();
         assert_eq!(verdict.outcome, Outcome::Escalate);
@@ -1377,7 +1387,7 @@ mod tests {
     #[test]
     fn window_count_is_disclosed_in_the_reason() {
         let answers = build(&[(Q_BIAS_PRESENT, ab(0.95))]);
-        let verdicts = map_answers_calibrated(&answers, false, false, 7, &Calibration::inert(), 4);
+        let verdicts = map_answers_calibrated(&answers, false, false, 7.0, &Calibration::inert(), 4);
 
         let verdict = find(&verdicts, "laya-bias").unwrap();
         assert!(
@@ -1390,7 +1400,7 @@ mod tests {
     #[test]
     fn a_single_window_does_not_mention_pooling() {
         let answers = build(&[(Q_BIAS_PRESENT, ab(0.95))]);
-        let verdicts = map_answers_calibrated(&answers, false, false, 7, &Calibration::inert(), 1);
+        let verdicts = map_answers_calibrated(&answers, false, false, 7.0, &Calibration::inert(), 1);
 
         let verdict = find(&verdicts, "laya-bias").unwrap();
         assert!(!verdict.reason.contains("windows"), "reason: {}", verdict.reason);

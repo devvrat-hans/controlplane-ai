@@ -3,7 +3,7 @@
 > **From AI calls to governed AI calls — in under 10ms.**
 >
 > ![Rust](https://img.shields.io/badge/Rust-1.75+-orange?logo=rust)
-> ![Tests](https://img.shields.io/badge/Tests-276%20%2B%20114-green)
+> ![Tests](https://img.shields.io/badge/Tests-534%20%2B%20116-green)
 > ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 > ![Round 2](https://img.shields.io/badge/Round%202-Complete-brightgreen)
 
@@ -40,6 +40,12 @@ open http://localhost:3000
 ```bash
 ./scripts/setup_local_url.sh hosts controlplane-ai.rtxcore   # one sudo, once
 open http://controlplane-ai.rtxcore
+```
+
+On **Windows** the script doesn't apply; add the alias once from an **Administrator** PowerShell:
+
+```powershell
+Add-Content C:\Windows\System32\drivers\etc\hosts "`r`n127.0.0.1 controlplane-ai.rtxcore`r`n::1 controlplane-ai.rtxcore" -Encoding ASCII; ipconfig /flushdns
 ```
 
 That works after `docker compose up --build` plus that **one-time hosts alias**. The
@@ -513,15 +519,33 @@ source ~/.zshrc
 ### Docker Ports Summary
 
 
-| Service       | Container               | Port  | URL                                              |
-| ------------- | ----------------------- | ----- | ------------------------------------------------ |
-| Proxy         | controlplane-gateway    | 8900  | [http://localhost:8900](http://localhost:8900)   |
-| Dashboard API | controlplane-gateway    | 8080  | [http://localhost:8080](http://localhost:8080)   |
-| Frontend      | controlplane-frontend   | 3000  | [http://localhost:3000](http://localhost:3000)   |
-| MCP server    | controlplane-mcp        | 8090  | [http://localhost:8090/health](http://localhost:8090/health) |
-| Ollama        | controlplane-ollama     | 11434 | [http://localhost:11434](http://localhost:11434) |
-| PostgreSQL    | controlplane-postgres   | 5432  | localhost:5432                                   |
-| Guardrails    | controlplane-guardrails | 8200  | [http://localhost:8200](http://localhost:8200)   |
+| Service       | Container               | Host port (default) | Override in `.env`   | URL                                              |
+| ------------- | ----------------------- | ------------------- | -------------------- | ------------------------------------------------ |
+| nginx (branded URL) | controlplane-nginx | 80 (IPv4 + IPv6)  | —                    | [http://controlplane-ai.rtxcore](http://controlplane-ai.rtxcore) |
+| Proxy         | controlplane-gateway    | 8900                | —                    | [http://localhost:8900](http://localhost:8900)   |
+| Dashboard API | controlplane-gateway    | 8080                | `API_HOST_PORT`      | [http://localhost:8080](http://localhost:8080)   |
+| Frontend      | controlplane-frontend   | 3000                | —                    | [http://localhost:3000](http://localhost:3000)   |
+| MCP server    | controlplane-mcp        | 8090                | —                    | [http://localhost:8090/health](http://localhost:8090/health) |
+| Ollama        | controlplane-ollama     | 11434               | `OLLAMA_HOST_PORT`   | [http://localhost:11434](http://localhost:11434) |
+| PostgreSQL    | controlplane-postgres   | 5432                | `POSTGRES_HOST_PORT` | localhost:5432                                   |
+| Guardrails    | controlplane-guardrails | 8200                | —                    | [http://localhost:8200](http://localhost:8200)   |
+
+**Every published port is bound to `127.0.0.1`** (nginx also to `::1`). The
+dashboard API runs in demo-mode auth and Postgres uses a default password, so none
+of it is reachable from other machines. To expose one deliberately, remove the
+`127.0.0.1:` prefix on that port in `docker-compose.yml`.
+
+**Port already taken?** A native install often owns a default port — e.g. the
+Windows Ollama app (11434), a PostgreSQL service (5432), or EDB's Apache /
+PEMHTTPD (8080). Containers talk to each other over the compose network
+(`postgres:5432`, `gateway:8080`, `ollama:11434`), so only the *host* side needs
+to move. Set a free port in `.env`, e.g.:
+
+```env
+OLLAMA_HOST_PORT=11435
+POSTGRES_HOST_PORT=5433
+API_HOST_PORT=8088
+```
 
 
 ### 5a. Branded Local URL (nginx)
@@ -535,6 +559,11 @@ docker compose up --build                                 # or: docker-compose u
 ./scripts/setup_local_url.sh hosts controlplane-ai.rtxcore # one sudo, once
 open http://controlplane-ai.rtxcore
 ```
+
+On Windows, add `127.0.0.1 controlplane-ai.rtxcore` and `::1 controlplane-ai.rtxcore`
+to `C:\Windows\System32\drivers\etc\hosts` from an Administrator PowerShell (one-liner
+in [Quick Start](#quick-start)). nginx is published on both IPv4 and IPv6 loopback, so
+either entry answers immediately.
 
 How it works:
 
@@ -585,6 +614,11 @@ NEXT_PUBLIC_PROXY_URL=http://controlplane-ai.rtxcore
 Then rebuild the frontend once: `docker compose up --build frontend`. The
 defaults are intentionally left on `localhost` so the dashboard keeps working on
 `http://localhost:3000` even if the proxy is down.
+
+Same-origin mode is also the fix when another program owns host port 8080 (on
+Windows, EDB PostgreSQL's Apache/PEMHTTPD service does): IPv4 calls to
+`localhost:8080` would reach that program instead of the dashboard API, while
+calls through nginx never touch the host port.
 
 **Custom name.** Any name works — nginx is the `default_server`, so it answers on
 whatever host resolves to loopback. A name outside `*.localhost` needs a one-time
@@ -756,17 +790,84 @@ UPSTREAM_MODEL=qwen2.5:1.5b
 | Overview       | `/`              | `GET /api/v1/stats/overview` + latency sparkline + detection quality           |
 | Live Stream    | `/stream`        | `GET /api/v1/verdicts/recent` + SSE real-time                                  |
 | Requests       | `/requests`      | `GET /api/v1/requests` — search, model & outcome filters, page size (25–500)   |
-| Request Detail | `/requests/[id]` | Full request/response payload, verdicts, policy checks table, audit records    |
+| Request Detail | `/requests/[id]` | Full request/response payload, verdicts, policy checks table with **exact per-check latency** (µs precision) and confidence to 0.1%, audit records |
 | Analytics      | `/analytics`     | Verdict trends, policy effectiveness, detection quality, feedback loop metrics |
-| Policies       | `/policies`      | `GET /api/v1/apps` + `GET/PUT /api/v1/policies/{id}` — versioned, gov levels   |
+| Policies       | `/policies`      | `GET /api/v1/apps` + `GET/PUT /api/v1/policies/{id}` — versioned, gov levels; saved toggles persist in the `policies` table |
 | Escalations    | `/escalations`   | `GET /api/v1/escalations` + session risk + priority + conversation thread      |
-| Cost           | `/cost`          | `GET /api/v1/cost/summary` (per-model) + `/timeseries` + `/anomalies`          |
+| Cost           | `/cost`          | `GET /api/v1/cost/summary` + `/timeseries` + `/daily` + `/anomalies` — flat **$1 per request** |
 | Audit          | `/audit`         | `GET /api/v1/audit` + keyset pagination + hash copy-to-clipboard               |
-| Settings       | `/settings`      | `GET /api/v1/system/config` + API key management + profile                     |
+| Settings       | `/settings`      | `GET /api/v1/system/config` + API key management + profile + **MCP integration guide** |
 | API Docs       | `/docs`          | Interactive endpoint reference for all API routes                              |
 
 
 **Zero mock data** — every page fetches real data from PostgreSQL. The Overview, Requests, and Analytics pages support **per-app filtering** via a dropdown in the header (only visible on pages where it applies).
+
+### Cost model and anomalies
+
+Billing is a flat **$1.00 per request** routed through the proxy
+(`COST_PER_REQUEST_USD` in `services/common/src/types.rs` — the single source of
+truth). Spend is derived from `intercepted_calls` at query time, so every
+historical request is priced the same way as new ones. Tokens are still tracked
+for usage analytics but don't affect spend.
+
+The Cost page shows spend for the last 24h / 7 days / all time, a projected
+monthly figure (7-day average × 30), spend vs. the 7-day baseline, spend per hour,
+a 30-day daily history, and breakdowns by app and model. Anomaly rules, evaluated
+per app (ratio rules need ≥ $5 of spend in the window):
+
+| Rule | Fires when |
+|---|---|
+| Hourly spend spike | last hour > 2× the app's average active hour over the prior 7 days (high ≥ 5×) |
+| Request burst | last 5 min > 3× the per-5-min rate of the rest of the hour (high ≥ 6×) |
+| Daily spend above average | last 24h > 1.5× the app's average active day (high ≥ 3×) |
+| New spend without baseline | ≥ $20 in an hour from an app with no spend in the prior 7 days |
+| Daily budget at 80% / exceeded | spend reaches 80% / 100% of `daily_budget_cents` in the app's cost policy |
+| Token usage surge | tokens in the last hour > 2× the hourly baseline |
+
+### Request detail timings
+
+The proxy times every stage with microsecond resolution: upstream call, fast-path
+total, and **each fast-path check individually — including checks that pass**
+(`intercepted_calls.fast_path_check_timings_us`). The shadow path does the same:
+when it finishes it publishes one run record per shadow check —
+`ran` (with wall time), `skipped` (with the reason, e.g. "disabled by policy",
+"no grounding context in request", "decision judge off") or `error` (e.g. guardrails
+sidecar unreachable) — which the decision service stores in
+`intercepted_calls.shadow_check_runs`. So every row has a time or an explicit
+**NOT RUN** / **ERROR** verdict, not just the checks that found something.
+Sidecar findings (`presidio-pii`, `llm-guard-toxicity`, `deepeval-hallucination`,
+`input-toxicity`, `input-bias`) are shown on their check's row. The table shows e.g. `0.042ms`,
+`3.271ms`, `812.4ms`; `<0.001ms` means below the 1 µs timer resolution. Requests
+recorded before these columns existed only have whole milliseconds, so a stored
+`0` still renders as `<1ms`, fast checks without per-check data show an estimate
+prefixed with `~`, and shadow checks without run records show `—`.
+
+### Hallucination check and decision judge
+
+- **Hallucination** needs something to check the answer against, so it runs only
+  when the request carries grounding context — a `system` message (or top-level
+  `system` field). Otherwise the row reads *NOT RUN — no grounding context in
+  request*. By default the sidecar uses a deterministic **fact-grounding check**:
+  names and numbers in the answer that never appear in the context are treated as
+  invented (e.g. "24/7", "45 days", "Zendesk" against a context that says
+  "Mon–Fri 9–5, 7 business days"), in under a millisecond. DeepEval's LLM judge is
+  opt-in via `HALLUCINATION_JUDGE_MODEL` (a capable Ollama model) or
+  `OPENAI_API_KEY`: the demo model `qwen2.5:1.5b` returned inverted verdicts and
+  needed 7–14 s per call, beyond the shadow worker's 5 s sidecar timeout.
+- **Decision judge (Laya)** is optional and off by default. Enable it with
+  `DECISION_JUDGE=laya` in `.env` (only `laya`/`jev` count — `on` does nothing), then
+  `docker compose --profile judge up -d --build` and recreate the gateway
+  (`docker compose up -d gateway`). Notes from bringing it up on a CPU-only box:
+  - The image installs **CPU-only PyTorch** (the default wheel pulls several GB of
+    CUDA libraries a CPU container never uses) — ~1.7 GB image.
+  - Checkpoints are cached in the `laya_models` volume, so they download once.
+    `LAYA_PRELOAD=0` serves as soon as the English checkpoint is ready and loads the
+    multilingual one on first non-English request (its ~650 MB download repeatedly
+    stalled here, and with preload the server never opened its port).
+  - One judge call answers ~12 governance questions: ~4 s on an idle CPU, 5–8 s under
+    load, so `LAYA_TIMEOUT_MS` is 15000 (it runs in the async shadow path and never
+    delays the response). If the judge can't answer in time its row reads **ERROR**
+    rather than a silent pass; the first call after a restart also loads the model.
 
 ### Keyboard Shortcuts
 
@@ -795,7 +896,8 @@ Press `?` anywhere in the dashboard to open the shortcuts modal. Quick navigatio
 | Latency Sparkline      | `GET /api/v1/metrics/latency-timeseries`               | Hourly avg + p99 for the overview sparkline                  |
 | Session Thread         | `GET /api/v1/sessions/{call_id}/thread`                | Full multi-turn conversation for reviewer context            |
 | Priority Escalations   | `GET /api/v1/escalations?status=all_open`              | Open + in-review cases, sorted by priority                   |
-| Per-Model Costs        | `GET /api/v1/cost/summary`                             | Response includes `by_model` array with per-model token/cost |
+| Cost Summary           | `GET /api/v1/cost/summary`                             | Spend (flat $1/request) 24h / 7d / all-time, peak hour, `by_model` and `by_app` |
+| Daily Spend            | `GET /api/v1/cost/daily`                               | 30 days of requests, tokens and spend (idle days as zero)    |
 | Request Search         | `GET /api/v1/requests?search=&model=&outcome=&app_id=` | Server-side search, model, outcome, and app filters          |
 | Governance Level       | `PUT /api/v1/apps/{id}/governance`                     | Set High/Medium/Low — auto-adjusts all policy thresholds     |
 | Policy Stats (30d)     | `GET /api/v1/stats/policy?window_hours=720`            | Per-check effectiveness up to 30 days (was capped at 7d)     |
@@ -820,7 +922,7 @@ Press `?` anywhere in the dashboard to open the shortcuts modal. Quick navigatio
 **All OS (same commands):**
 
 ```bash
-# All Rust tests (376 tests across 32 test binaries)
+# All Rust tests (534 tests)
 cargo test --workspace
 
 # All frontend tests (116 tests across 10 files)
@@ -835,10 +937,10 @@ cargo bench -p controlplane-fast-path
 
 **Test Results:**
 
-- Rust: 376 tests, 0 failures (unit + integration + DB)
-- Frontend: 115 of 116 pass. The one failure
-  (`components/header.test.tsx` → "renders app selector with options", expects 4 options
-  but gets 1) is **pre-existing**: it fails on `main` too, with no header code touched.
+- Rust: 534 tests, 0 failures (unit + integration + DB)
+- Frontend: 116 of 116 pass. (The header app-selector test was stale — it expected
+  four hard-coded apps; the selector now loads apps from `/api/v1/apps`, and the
+  test mocks that provider.)
 - DB integration: 4 reviewer-override RAG tests
 
 ### Policies Page Toggle Tests (41 tests)
@@ -1232,6 +1334,27 @@ FP rate = (overrides + dismissals) / total resolved escalations per check. Red h
 | Docker permission denied   | `sudo docker compose up`                                                      | Run PowerShell as Administrator              |
 | Colima not running         | `export COLIMA_HOME=/tmp/colima && colima start --cpu 4 --memory 8 --disk 60` | N/A                                          |
 | Cargo build slow           | First build compiles all deps (~2min)                                         | First build compiles all deps (~3min)        |
+| `ports are not available` on `docker compose up` | A native service owns that host port — set `OLLAMA_HOST_PORT` / `POSTGRES_HOST_PORT` / `API_HOST_PORT` in `.env` (see [Docker Ports Summary](#docker-ports-summary)) | Same; check the owner with `Get-NetTCPConnection -LocalPort <port> -State Listen` |
+| `controlplane-ai.rtxcore` doesn't resolve | Run `./scripts/setup_local_url.sh hosts controlplane-ai.rtxcore` | Add the hosts entries from [Quick Start](#quick-start) as Administrator |
+| Dashboard loads but API calls fail | Another program owns host `:8080` — use same-origin mode (`NEXT_PUBLIC_API_URL=http://controlplane-ai.rtxcore`) | Same (EDB's PEMHTTPD service commonly owns 8080) |
+| New migration not applied  | Existing volumes don't re-run `infra/migrations` — apply it: `docker exec -i controlplane-postgres psql -U controlplane -d controlplane < infra/migrations/NNN_name.sql` | Same command in PowerShell: `Get-Content infra\migrations\NNN_name.sql \| docker exec -i controlplane-postgres psql -U controlplane -d controlplane` |
+
+
+---
+
+## 17a. Security Status & Known Limitations
+
+Honest status per AGENTS.md ("label scaffolded code `SCAFFOLD`"):
+
+| Area | Status |
+|---|---|
+| Dashboard API authentication | **SCAFFOLD (demo mode).** `auth_middleware` rejects *invalid* JWTs but lets requests with **no** token through, and handlers don't check roles. Every route — including policy / API-key writes and audit export — is open to anyone who can reach port 8080. The dashboard login creates a local demo token, not a signed JWT. The gateway logs a `DEMO MODE` warning at startup. Mitigation: all ports are bound to localhost. |
+| Default secrets | `JWT_SECRET`, the Postgres password (`secret`) and the MCP dev tokens (`dev-admin` …) in `docker-compose.yml` are development defaults — override them in `.env` before sharing a deployment. |
+| MCP server | Implemented, with its own token/role checks (see Settings → MCP Integration and `services/mcp-server/README.md`). It calls the dashboard API, so it inherits the demo-mode auth above. |
+| Service routers | `audit_router`, `cost_router` and the decision/escalation routers exist as library code but are **not mounted** by the gateway; the dashboard API serves all `/api/v1/*` routes. |
+| Audit chain | Appends are serialized with a Postgres advisory lock and use microsecond timestamps, so concurrent gateways can't fork the chain and new hashes can be recomputed from their rows. Records written before that fix were hashed with nanosecond timestamps that Postgres truncated, so only their chain *linkage* (not content) can be re-verified. |
+| Verdict persistence | The decision service is the single writer of `verdicts`. (A second, duration-less insert from the dashboard SSE bridge used to race it and drop check durations — removed.) |
+| Migrations | `infra/migrations` runs only when Postgres initializes an empty volume; the gateway runs sqlx migrations only with `RUN_MIGRATIONS=true`. New files (e.g. `025_flat_per_request_cost.sql`, `026_microsecond_latency.sql`, `027_shadow_check_runs.sql`) must be applied manually to an existing database — see Troubleshooting. |
 
 
 ---

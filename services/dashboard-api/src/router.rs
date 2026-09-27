@@ -12,6 +12,7 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use uuid::Uuid;
 
 use controlplane_common::events::{subjects, EventEnvelope};
+use controlplane_common::COST_PER_REQUEST_USD;
 use controlplane_platform::messaging::EventPublisher;
 
 use crate::auth::auth_middleware;
@@ -48,6 +49,17 @@ pub fn dashboard_router(state: DashboardState) -> Router {
             .allow_methods(Any)
             .allow_headers(Any)
     };
+
+    // SCAFFOLD: auth is demo-mode. `auth_middleware` rejects *invalid* tokens but lets
+    // requests with no token through, and no handler checks roles — every route,
+    // including writes and audit export, is open to anyone who can reach this port.
+    // Say so loudly at startup rather than let it pass as secured.
+    tracing::warn!(
+        "Dashboard API auth is in DEMO MODE: unauthenticated requests are allowed on all routes (including policy/API-key writes and audit export). Do not expose port 8080 beyond localhost."
+    );
+    if std::env::var("JWT_SECRET").is_err() {
+        tracing::warn!("JWT_SECRET is unset — tokens are verified with the built-in dev secret");
+    }
 
     // Security headers + request ID middleware
     let security_headers = axum::middleware::from_fn(|req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async {
@@ -86,6 +98,7 @@ pub fn dashboard_router(state: DashboardState) -> Router {
         // Cost analytics
         .route("/api/v1/cost/summary", get(cost_summary))
         .route("/api/v1/cost/timeseries", get(cost_timeseries))
+        .route("/api/v1/cost/daily", get(cost_daily))
         .route("/api/v1/cost/anomalies", get(cost_anomalies))
         .route("/api/v1/metrics/latency-timeseries", get(latency_timeseries))
         // API Keys
@@ -934,6 +947,19 @@ async fn get_policy(
     for (id, axis, config, active, profile, version) in &rows {
         if let Some(obj) = config.as_object() {
             for (k, v) in obj {
+                // `checks` lives on both the performance and responsibility rows with
+                // disjoint toggles, so union them; otherwise the responsibility toggles
+                // vanish from the merged view and the UI reloads them as "on".
+                if let (Some(serde_json::Value::Object(into)), serde_json::Value::Object(from)) =
+                    (merged.get_mut(k), v)
+                {
+                    if k == "checks" {
+                        for (ck, cv) in from {
+                            into.entry(ck.clone()).or_insert_with(|| cv.clone());
+                        }
+                        continue;
+                    }
+                }
                 // First writer wins per key; rows are ordered by axis so this is deterministic
                 merged.entry(k.clone()).or_insert_with(|| v.clone());
             }
@@ -1049,9 +1075,11 @@ async fn update_policy(
         ("responsibility", &responsibility_config),
     ];
     for (axis, config) in axis_configs {
-        // Update existing active row for this app+axis, clearing any profile association
+        // Update existing active row for this app+axis, clearing any profile association.
+        // `||` merges over the stored config: keys the UI sends win, keys it does not
+        // manage (daily_budget_cents, retry_window_seconds, ...) survive the save.
         let rows_affected = sqlx::query(
-            "UPDATE policies SET threshold_config = $1, version = $2, profile = NULL, updated_at = NOW() \
+            "UPDATE policies SET threshold_config = threshold_config || $1, version = $2, profile = NULL, updated_at = NOW() \
              WHERE app_id = $3 AND axis = $4 AND is_active = true"
         )
         .bind(config)
@@ -1391,22 +1419,6 @@ async fn api_key_analytics(
     let total_requests = stats.0.unwrap_or(0);
     let total_tokens = stats.1.unwrap_or(0);
 
-    // Model-aware cost for this API key
-    let model_cost_rows: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT model, SUM(token_count_input), SUM(token_count_output) \
-         FROM intercepted_calls WHERE api_key_id = $1 GROUP BY model"
-    )
-    .bind(id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-
-    let total_cost: f64 = model_cost_rows.iter().map(|(model, inp, out)| {
-        let tokens = inp.unwrap_or(0) + out.unwrap_or(0);
-        let price = model_price_per_million_tokens(model);
-        tokens as f64 * price / 1_000_000.0
-    }).sum();
-
     // Verdicts by outcome
     let verdicts_by_outcome: Vec<OutcomeCount> = sqlx::query_as(
         "SELECT v.outcome, COUNT(*) as count
@@ -1440,7 +1452,7 @@ async fn api_key_analytics(
         name: key_info.1,
         total_requests,
         total_tokens,
-        total_cost_usd: (total_cost * 100.0).round() / 100.0,
+        total_cost_usd: spend_usd(total_requests),
         verdicts_by_outcome,
         recent_activity,
     }))
@@ -1448,21 +1460,60 @@ async fn api_key_analytics(
 
 
 // === Cost Analytics Handlers ===
+//
+// Billing model: every request routed through the proxy costs a flat
+// `COST_PER_REQUEST_USD`, so spend = request count × price. It is derived from
+// `intercepted_calls` at query time, which means all historical requests are
+// priced the same way as new ones with no backfill needed.
+
+fn spend_usd(requests: i64) -> f64 {
+    round_cents(requests as f64 * COST_PER_REQUEST_USD)
+}
+
+fn round_cents(usd: f64) -> f64 {
+    (usd * 100.0).round() / 100.0
+}
 
 #[derive(Serialize)]
 struct ModelCost {
     model: String,
     tokens: i64,
+    requests: i64,
     cost_usd: f64,
 }
 
 #[derive(Serialize)]
+struct AppCost {
+    app_id: Uuid,
+    app_name: String,
+    requests_24h: i64,
+    cost_24h_usd: f64,
+    requests_all_time: i64,
+    cost_all_time_usd: f64,
+}
+
+#[derive(Serialize)]
 struct CostSummary {
+    /// Flat price per request this summary was computed with.
+    cost_per_request_usd: f64,
+    // --- last 24 hours ---
     total_tokens: i64,
     total_cost_usd: f64,
     request_count: i64,
     avg_tokens_per_request: f64,
+    spend_last_hour_usd: f64,
+    // --- history ---
+    spend_7d_usd: f64,
+    /// Average daily spend over the 7 days before the last 24h (calendar days,
+    /// idle days count as $0). Baseline for "vs. baseline" and projections.
+    baseline_daily_spend_usd: f64,
+    spend_all_time_usd: f64,
+    requests_all_time: i64,
+    first_request_at: Option<DateTime<Utc>>,
+    peak_hour: Option<String>,
+    peak_hour_spend_usd: f64,
     by_model: Vec<ModelCost>,
+    by_app: Vec<AppCost>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -1470,38 +1521,35 @@ struct CostTimeseriesRow {
     hour: String,
     tokens: i64,
     requests: i64,
+    #[sqlx(skip)]
+    cost_usd: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, sqlx::FromRow)]
+struct CostDailyRow {
+    day: String,
+    tokens: i64,
+    requests: i64,
+    #[sqlx(skip)]
+    cost_usd: f64,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
 struct CostAnomaly {
+    /// App display name (field name kept for API compatibility).
     app_id: String,
     metric: String,
     current_value: f64,
     baseline_value: f64,
-    deviation_pct: f64,
-}
-
-/// Model-aware pricing (cost per 1M tokens) — matches provider list prices.
-/// Falls back to $0.15/1M for unknown models.
-fn model_price_per_million_tokens(model: &str) -> f64 {
-    let model_lower = model.to_lowercase();
-    if model_lower.contains("gpt-4o") || model_lower.contains("gpt-4-turbo") {
-        10.0 // $10/1M input
-    } else if model_lower.contains("gpt-4o-mini") || model_lower.contains("gpt-3.5") {
-        0.15 // $0.15/1M
-    } else if model_lower.contains("claude-3-5-sonnet") || model_lower.contains("claude-sonnet-4") {
-        3.0 // $3/1M input
-    } else if model_lower.contains("claude-3-haiku") || model_lower.contains("claude-3-5-haiku") {
-        0.25 // $0.25/1M
-    } else if model_lower.contains("claude-3-opus") || model_lower.contains("claude-3.5-opus") {
-        15.0 // $15/1M
-    } else if model_lower.contains("gemini-2.0-flash") || model_lower.contains("gemini-1.5-flash") {
-        0.075 // $0.075/1M
-    } else if model_lower.contains("gemini-1.5-pro") {
-        1.25 // $1.25/1M
-    } else {
-        0.15 // fallback
-    }
+    /// `None` when there is no baseline to compare against.
+    deviation_pct: Option<f64>,
+    /// "usd" or "tokens" — what `current_value` / `baseline_value` measure.
+    unit: &'static str,
+    /// Window `current_value` covers, e.g. "last hour".
+    window: &'static str,
+    /// "medium" or "high".
+    severity: &'static str,
+    message: String,
 }
 
 async fn cost_summary(
@@ -1509,56 +1557,88 @@ async fn cost_summary(
 ) -> Result<Json<CostSummary>, (StatusCode, String)> {
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+    let db_err = |e: sqlx::Error| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"));
 
-    let now_minus_24h = Utc::now() - chrono::Duration::hours(24);
-
-    let row: (Option<i64>, Option<i64>) = sqlx::query_as(
+    let totals: (i64, i64, i64, i64, i64, i64, Option<DateTime<Utc>>) = sqlx::query_as(
         "SELECT \
-            COALESCE(SUM(token_count_input + token_count_output), 0), \
-            COUNT(*) \
-         FROM intercepted_calls WHERE created_at > $1"
+            COALESCE(SUM(COALESCE(token_count_input, 0) + COALESCE(token_count_output, 0)) \
+                FILTER (WHERE created_at > NOW() - INTERVAL '24 hours'), 0)::bigint, \
+            COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours'), \
+            COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour'), \
+            COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days'), \
+            COUNT(*) FILTER (WHERE created_at <= NOW() - INTERVAL '24 hours' \
+                               AND created_at > NOW() - INTERVAL '8 days'), \
+            COUNT(*), \
+            MIN(created_at) \
+         FROM intercepted_calls"
     )
-    .bind(now_minus_24h)
     .fetch_one(pool)
     .await
-    .unwrap_or((Some(0), Some(0)));
+    .map_err(db_err)?;
+    let (total_tokens, request_count, req_1h, req_7d, req_baseline_7d, req_all, first_at) = totals;
 
-    let total_tokens = row.0.unwrap_or(0);
-    let request_count = row.1.unwrap_or(0);
-    let avg = if request_count > 0 { total_tokens as f64 / request_count as f64 } else { 0.0 };
-
-    // Model-aware cost: sum cost per-model using provider list prices
-    let model_rows: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT model, SUM(token_count_input), SUM(token_count_output) \
-         FROM intercepted_calls WHERE created_at > $1 GROUP BY model"
+    let peak: Option<(String, i64)> = sqlx::query_as(
+        "SELECT TO_CHAR(date_trunc('hour', created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
+                COUNT(*) \
+         FROM intercepted_calls WHERE created_at > NOW() - INTERVAL '7 days' \
+         GROUP BY date_trunc('hour', created_at) ORDER BY COUNT(*) DESC, 1 DESC LIMIT 1"
     )
-    .bind(now_minus_24h)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?;
+
+    let model_rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT model, \
+                COALESCE(SUM(COALESCE(token_count_input, 0) + COALESCE(token_count_output, 0)), 0)::bigint, \
+                COUNT(*) \
+         FROM intercepted_calls WHERE created_at > NOW() - INTERVAL '24 hours' \
+         GROUP BY model ORDER BY COUNT(*) DESC"
+    )
     .fetch_all(pool)
     .await
-    .unwrap_or_default();
+    .map_err(db_err)?;
 
-    let total_cost: f64 = model_rows.iter().map(|(model, inp, out)| {
-        let tokens = inp.unwrap_or(0) + out.unwrap_or(0);
-        let price = model_price_per_million_tokens(model);
-        tokens as f64 * price / 1_000_000.0
-    }).sum();
+    let app_rows: Vec<(Uuid, String, i64, i64)> = sqlx::query_as(
+        "SELECT ic.app_id, COALESCE(a.name, ic.app_id::text), \
+                COUNT(*) FILTER (WHERE ic.created_at > NOW() - INTERVAL '24 hours'), \
+                COUNT(*) \
+         FROM intercepted_calls ic LEFT JOIN apps a ON a.id = ic.app_id \
+         GROUP BY ic.app_id, a.name ORDER BY COUNT(*) DESC"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
 
-    let by_model: Vec<ModelCost> = model_rows.iter().map(|(model, inp, out)| {
-        let tokens = inp.unwrap_or(0) + out.unwrap_or(0);
-        let price = model_price_per_million_tokens(model);
-        ModelCost {
-            model: model.clone(),
-            tokens,
-            cost_usd: ((tokens as f64 * price / 1_000_000.0) * 100.0).round() / 100.0,
-        }
-    }).collect();
+    let avg = if request_count > 0 { total_tokens as f64 / request_count as f64 } else { 0.0 };
 
     Ok(Json(CostSummary {
+        cost_per_request_usd: COST_PER_REQUEST_USD,
         total_tokens,
-        total_cost_usd: (total_cost * 100.0).round() / 100.0,
+        total_cost_usd: spend_usd(request_count),
         request_count,
         avg_tokens_per_request: avg.round(),
-        by_model,
+        spend_last_hour_usd: spend_usd(req_1h),
+        spend_7d_usd: spend_usd(req_7d),
+        baseline_daily_spend_usd: round_cents(req_baseline_7d as f64 * COST_PER_REQUEST_USD / 7.0),
+        spend_all_time_usd: spend_usd(req_all),
+        requests_all_time: req_all,
+        first_request_at: first_at,
+        peak_hour_spend_usd: peak.as_ref().map(|(_, n)| spend_usd(*n)).unwrap_or(0.0),
+        peak_hour: peak.map(|(h, _)| h),
+        by_model: model_rows.into_iter().map(|(model, tokens, requests)| ModelCost {
+            model,
+            tokens,
+            requests,
+            cost_usd: spend_usd(requests),
+        }).collect(),
+        by_app: app_rows.into_iter().map(|(app_id, app_name, r24, rall)| AppCost {
+            app_id,
+            app_name,
+            requests_24h: r24,
+            cost_24h_usd: spend_usd(r24),
+            requests_all_time: rall,
+            cost_all_time_usd: spend_usd(rall),
+        }).collect(),
     }))
 }
 
@@ -1568,7 +1648,7 @@ async fn cost_timeseries(
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
 
-    let rows: Vec<CostTimeseriesRow> = sqlx::query_as(
+    let mut rows: Vec<CostTimeseriesRow> = sqlx::query_as(
         "SELECT \
             TO_CHAR(date_trunc('hour', created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as hour, \
             COALESCE(SUM(token_count_input + token_count_output), 0) as tokens, \
@@ -1581,8 +1661,166 @@ async fn cost_timeseries(
     .fetch_all(pool)
     .await
     .unwrap_or_default();
+    for r in &mut rows {
+        r.cost_usd = spend_usd(r.requests);
+    }
 
     Ok(Json(rows))
+}
+
+/// Daily spend history for the last 30 days (UTC days, idle days included as 0).
+async fn cost_daily(
+    State(state): State<Arc<DashboardState>>,
+) -> Result<Json<Vec<CostDailyRow>>, (StatusCode, String)> {
+    let pool = state.pool.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
+
+    let mut rows: Vec<CostDailyRow> = sqlx::query_as(
+        "SELECT TO_CHAR(d.day, 'YYYY-MM-DD') as day, \
+                COALESCE(SUM(COALESCE(ic.token_count_input, 0) + COALESCE(ic.token_count_output, 0)), 0)::bigint as tokens, \
+                COUNT(ic.id) as requests \
+         FROM generate_series( \
+                date_trunc('day', NOW() AT TIME ZONE 'UTC') - INTERVAL '29 days', \
+                date_trunc('day', NOW() AT TIME ZONE 'UTC'), INTERVAL '1 day') AS d(day) \
+         LEFT JOIN intercepted_calls ic \
+                ON date_trunc('day', ic.created_at AT TIME ZONE 'UTC') = d.day \
+         GROUP BY d.day ORDER BY d.day"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+    for r in &mut rows {
+        r.cost_usd = spend_usd(r.requests);
+    }
+
+    Ok(Json(rows))
+}
+
+/// Per-app request counts feeding the anomaly rules. Spend is derived from the
+/// counts, so every rule is priced by `COST_PER_REQUEST_USD`.
+#[derive(Debug, Default, Clone, sqlx::FromRow)]
+struct AppSpendStats {
+    app_name: String,
+    /// Requests in the last 5 minutes.
+    req_5m: i64,
+    /// Requests in the 55 minutes before that (burst baseline).
+    req_prior_55m: i64,
+    req_1h: i64,
+    tokens_1h: i64,
+    /// Requests / active hours / tokens over the 7 days before the last hour.
+    base_hour_req: i64,
+    base_hour_active: i64,
+    base_hour_tokens: i64,
+    req_24h: i64,
+    /// Requests / active days over the 7 days before the last 24 hours.
+    base_day_req: i64,
+    base_day_active: i64,
+    daily_budget_cents: Option<f64>,
+}
+
+/// Minimum spend in a window before a ratio-based rule may fire, so a couple of
+/// requests after an idle stretch are not flagged.
+const ANOMALY_MIN_SPEND_USD: f64 = 5.0;
+/// Spend in the last hour that is flagged when the app has no history at all.
+const ANOMALY_NO_BASELINE_SPEND_USD: f64 = 20.0;
+
+fn ratio_anomaly(
+    app: &str,
+    metric: &str,
+    unit: &'static str,
+    window: &'static str,
+    current: f64,
+    baseline: f64,
+    trigger_ratio: f64,
+    high_ratio: f64,
+) -> Option<CostAnomaly> {
+    if baseline <= 0.0 || current / baseline <= trigger_ratio {
+        return None;
+    }
+    let ratio = current / baseline;
+    let fmt = |v: f64| if unit == "usd" { format!("${v:.2}") } else { format!("{v:.0} tokens") };
+    Some(CostAnomaly {
+        app_id: app.to_string(),
+        metric: metric.to_string(),
+        current_value: round_cents(current),
+        baseline_value: round_cents(baseline),
+        deviation_pct: Some(((ratio - 1.0) * 100.0).round()),
+        unit,
+        window,
+        severity: if ratio >= high_ratio { "high" } else { "medium" },
+        message: format!("{} in the {window} vs {} baseline ({ratio:.1}x)", fmt(current), fmt(baseline)),
+    })
+}
+
+/// Evaluate every spend anomaly rule for one app.
+fn evaluate_cost_anomalies(s: &AppSpendStats) -> Vec<CostAnomaly> {
+    let app = s.app_name.as_str();
+    let usd = |requests: i64| requests as f64 * COST_PER_REQUEST_USD;
+    let mut out = Vec::new();
+
+    // 1. Hourly spend spike: last hour vs average active hour over the prior 7 days.
+    let spend_1h = usd(s.req_1h);
+    if s.base_hour_active > 0 {
+        let baseline = usd(s.base_hour_req) / s.base_hour_active as f64;
+        if spend_1h >= ANOMALY_MIN_SPEND_USD {
+            out.extend(ratio_anomaly(app, "Hourly spend spike", "usd", "last hour", spend_1h, baseline, 2.0, 5.0));
+        }
+    } else if spend_1h >= ANOMALY_NO_BASELINE_SPEND_USD {
+        // 2. Spend from an app with no history to compare against.
+        out.push(CostAnomaly {
+            app_id: app.to_string(),
+            metric: "New spend without baseline".to_string(),
+            current_value: round_cents(spend_1h),
+            baseline_value: 0.0,
+            deviation_pct: None,
+            unit: "usd",
+            window: "last hour",
+            severity: "medium",
+            message: format!("${spend_1h:.2} in the last hour with no spend in the prior 7 days"),
+        });
+    }
+
+    // 3. Request burst: last 5 minutes vs the per-5-minute average of the rest of the hour.
+    let spend_5m = usd(s.req_5m);
+    if spend_5m >= ANOMALY_MIN_SPEND_USD {
+        let baseline = usd(s.req_prior_55m) / 11.0;
+        out.extend(ratio_anomaly(app, "Request burst", "usd", "last 5 minutes", spend_5m, baseline, 3.0, 6.0));
+    }
+
+    // 4. Daily spend above the app's average active day over the prior 7 days.
+    let spend_24h = usd(s.req_24h);
+    if s.base_day_active > 0 && spend_24h >= ANOMALY_MIN_SPEND_USD {
+        let baseline = usd(s.base_day_req) / s.base_day_active as f64;
+        out.extend(ratio_anomaly(app, "Daily spend above average", "usd", "last 24 hours", spend_24h, baseline, 1.5, 3.0));
+    }
+
+    // 5. Daily budget from the app's cost policy (`daily_budget_cents`), when set.
+    if let Some(cents) = s.daily_budget_cents.filter(|c| *c > 0.0) {
+        let budget = cents / 100.0;
+        let used = spend_24h / budget;
+        if used >= 0.8 {
+            let exceeded = used >= 1.0;
+            out.push(CostAnomaly {
+                app_id: app.to_string(),
+                metric: if exceeded { "Daily budget exceeded" } else { "Daily budget at 80%" }.to_string(),
+                current_value: round_cents(spend_24h),
+                baseline_value: round_cents(budget),
+                deviation_pct: Some(((used - 1.0) * 100.0).round()),
+                unit: "usd",
+                window: "last 24 hours",
+                severity: if exceeded { "high" } else { "medium" },
+                message: format!("${spend_24h:.2} spent of ${budget:.2} daily budget ({:.0}%)", used * 100.0),
+            });
+        }
+    }
+
+    // 6. Token usage surge (tokens no longer affect spend, but still signal runaway prompts).
+    if s.base_hour_active > 0 {
+        let baseline = s.base_hour_tokens as f64 / s.base_hour_active as f64;
+        out.extend(ratio_anomaly(app, "Token usage surge", "tokens", "last hour", s.tokens_1h as f64, baseline, 2.0, 5.0));
+    }
+
+    out
 }
 
 async fn cost_anomalies(
@@ -1591,33 +1829,43 @@ async fn cost_anomalies(
     let pool = state.pool.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))?;
 
-    // Compare last hour vs per-hour average of previous 24 hours
-    let rows: Vec<CostAnomaly> = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT COALESCE(a.name, ic.app_id::text) as app_name, \
-            COALESCE(SUM(ic.token_count_input + ic.token_count_output), 0) as recent_tokens, \
-            GREATEST(COALESCE((SELECT SUM(token_count_input + token_count_output) / GREATEST(COUNT(DISTINCT date_trunc('hour', created_at)), 1) \
-                FROM intercepted_calls \
-                WHERE app_id = ic.app_id AND created_at BETWEEN NOW() - INTERVAL '24 hours' AND NOW() - INTERVAL '1 hour'), 1), 1) as hourly_avg \
-         FROM intercepted_calls ic \
-         LEFT JOIN apps a ON a.id = ic.app_id \
-         WHERE ic.created_at > NOW() - INTERVAL '1 hour' \
-         GROUP BY ic.app_id, a.name"
+    let stats: Vec<AppSpendStats> = sqlx::query_as(
+        "WITH c AS ( \
+            SELECT app_id, created_at, \
+                   COALESCE(token_count_input, 0) + COALESCE(token_count_output, 0) AS tokens \
+            FROM intercepted_calls WHERE created_at > NOW() - INTERVAL '8 days' \
+         ) \
+         SELECT COALESCE((SELECT a.name FROM apps a WHERE a.id = c.app_id), c.app_id::text) AS app_name, \
+            COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '5 minutes') AS req_5m, \
+            COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour' \
+                               AND created_at <= NOW() - INTERVAL '5 minutes') AS req_prior_55m, \
+            COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') AS req_1h, \
+            COALESCE(SUM(tokens) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour'), 0)::bigint AS tokens_1h, \
+            COUNT(*) FILTER (WHERE created_at <= NOW() - INTERVAL '1 hour' \
+                               AND created_at > NOW() - INTERVAL '7 days 1 hour') AS base_hour_req, \
+            COUNT(DISTINCT date_trunc('hour', created_at)) FILTER (WHERE created_at <= NOW() - INTERVAL '1 hour' \
+                               AND created_at > NOW() - INTERVAL '7 days 1 hour') AS base_hour_active, \
+            COALESCE(SUM(tokens) FILTER (WHERE created_at <= NOW() - INTERVAL '1 hour' \
+                               AND created_at > NOW() - INTERVAL '7 days 1 hour'), 0)::bigint AS base_hour_tokens, \
+            COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') AS req_24h, \
+            COUNT(*) FILTER (WHERE created_at <= NOW() - INTERVAL '24 hours') AS base_day_req, \
+            COUNT(DISTINCT date_trunc('day', created_at)) FILTER (WHERE created_at <= NOW() - INTERVAL '24 hours') \
+                AS base_day_active, \
+            (SELECT (p.threshold_config->>'daily_budget_cents')::float8 FROM policies p \
+              WHERE p.app_id = c.app_id AND p.axis = 'cost' AND p.is_active LIMIT 1) AS daily_budget_cents \
+         FROM c \
+         GROUP BY c.app_id \
+         HAVING COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') > 0"
     )
     .fetch_all(pool)
     .await
-    .unwrap_or_default()
-    .into_iter()
-    .filter(|(_, recent, avg)| *avg > 0 && (*recent as f64 / *avg as f64) > 2.0)
-    .map(|(app_name, recent, avg)| CostAnomaly {
-        app_id: app_name,
-        metric: "Token usage surge".to_string(),
-        current_value: recent as f64,
-        baseline_value: avg as f64,
-        deviation_pct: ((recent as f64 / avg as f64 - 1.0) * 100.0).round(),
-    })
-    .collect();
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    Ok(Json(rows))
+    let mut anomalies: Vec<CostAnomaly> = stats.iter().flat_map(evaluate_cost_anomalies).collect();
+    anomalies.sort_by(|a, b| (b.severity == "high").cmp(&(a.severity == "high"))
+        .then(b.current_value.partial_cmp(&a.current_value).unwrap_or(std::cmp::Ordering::Equal)));
+
+    Ok(Json(anomalies))
 }
 
 #[derive(Serialize)]
@@ -1699,6 +1947,13 @@ struct CallDetail {
     token_count_output: Option<i32>,
     upstream_latency_ms: Option<i32>,
     fast_path_latency_ms: Option<i32>,
+    /// Exact timings in microseconds (NULL for calls recorded before they existed).
+    upstream_latency_us: Option<i64>,
+    fast_path_latency_us: Option<i64>,
+    /// `{check_name: microseconds}` for every fast-path check that ran, passes included.
+    fast_path_check_timings_us: Option<serde_json::Value>,
+    /// Shadow checks' run records: `[{check_name, status, duration_us, detail}]`.
+    shadow_check_runs: Option<serde_json::Value>,
     request_payload: Option<serde_json::Value>,
     response_payload: Option<serde_json::Value>,
     created_at: DateTime<Utc>,
@@ -1714,6 +1969,8 @@ struct VerdictDetail {
     reason: String,
     check_name: String,
     latency_ms: Option<i32>,
+    /// Exact check duration in microseconds, when recorded.
+    latency_us: Option<i64>,
     created_at: DateTime<Utc>,
 }
 
@@ -1903,7 +2160,8 @@ async fn get_request_detail(
     // Fetch the intercepted call
     let call: CallDetail = sqlx::query_as(
         "SELECT id, correlation_id, app_id, model, token_count_input, token_count_output,
-                upstream_latency_ms, fast_path_latency_ms, request_payload, response_payload, created_at
+                upstream_latency_ms, fast_path_latency_ms, upstream_latency_us, fast_path_latency_us,
+                fast_path_check_timings_us, shadow_check_runs, request_payload, response_payload, created_at
          FROM intercepted_calls WHERE id = $1"
     )
     .bind(call_id)
@@ -1915,7 +2173,7 @@ async fn get_request_detail(
     // Fetch all verdicts for this call
     let verdicts: Vec<VerdictDetail> = sqlx::query_as(
         "SELECT id, axis, path, outcome, confidence, reason, check_name, \
-                COALESCE(duration_ms, latency_ms) as latency_ms, created_at
+                COALESCE(duration_ms, latency_ms) as latency_ms, duration_us as latency_us, created_at
          FROM verdicts WHERE call_id = $1 ORDER BY created_at ASC"
     )
     .bind(call_id)
@@ -3096,4 +3354,91 @@ async fn update_governance_level(
             _ => "Medium governance: standard thresholds applied — block at 0.9, escalate at 0.6, max 4K tokens"
         }
     })))
+}
+
+#[cfg(test)]
+mod cost_anomaly_tests {
+    use super::*;
+
+    fn stats() -> AppSpendStats {
+        AppSpendStats { app_name: "ChatBot-Prod".into(), ..Default::default() }
+    }
+
+    fn metrics(s: &AppSpendStats) -> Vec<String> {
+        evaluate_cost_anomalies(s).into_iter().map(|a| a.metric).collect()
+    }
+
+    #[test]
+    fn spend_is_flat_per_request() {
+        assert_eq!(spend_usd(0), 0.0);
+        assert_eq!(spend_usd(1), COST_PER_REQUEST_USD);
+        assert_eq!(spend_usd(2545), 2545.0 * COST_PER_REQUEST_USD);
+    }
+
+    #[test]
+    fn quiet_app_has_no_anomalies() {
+        let s = AppSpendStats { req_1h: 10, req_24h: 40, base_hour_req: 70, base_hour_active: 7, base_day_req: 280, base_day_active: 7, ..stats() };
+        assert!(metrics(&s).is_empty());
+    }
+
+    #[test]
+    fn hourly_spike_fires_above_2x_and_is_high_above_5x() {
+        let s = AppSpendStats { req_1h: 30, base_hour_req: 70, base_hour_active: 7, ..stats() };
+        let a = evaluate_cost_anomalies(&s);
+        let spike = a.iter().find(|a| a.metric == "Hourly spend spike").unwrap();
+        assert_eq!((spike.current_value, spike.baseline_value, spike.deviation_pct), (30.0, 10.0, Some(200.0)));
+        assert_eq!((spike.unit, spike.severity), ("usd", "medium"));
+
+        let s = AppSpendStats { req_1h: 60, ..s };
+        assert_eq!(evaluate_cost_anomalies(&s)[0].severity, "high");
+    }
+
+    #[test]
+    fn small_spend_does_not_trigger_ratio_rules() {
+        // 4 requests vs a 1-request baseline is 4x, but only $4.
+        let s = AppSpendStats { req_1h: 4, base_hour_req: 7, base_hour_active: 7, ..stats() };
+        assert!(!metrics(&s).contains(&"Hourly spend spike".to_string()));
+    }
+
+    #[test]
+    fn no_history_flags_large_new_spend_only() {
+        let s = AppSpendStats { req_1h: 19, ..stats() };
+        assert!(metrics(&s).is_empty());
+        let s = AppSpendStats { req_1h: 103, ..stats() };
+        let a = evaluate_cost_anomalies(&s);
+        assert_eq!(a[0].metric, "New spend without baseline");
+        assert_eq!(a[0].deviation_pct, None);
+    }
+
+    #[test]
+    fn burst_compares_last_5_minutes_to_rest_of_hour() {
+        // 11 requests over the prior 55 min = $1 per 5 min; 8 in the last 5 min = 8x.
+        let s = AppSpendStats { req_5m: 8, req_prior_55m: 11, req_1h: 19, ..stats() };
+        let burst = evaluate_cost_anomalies(&s).into_iter().find(|a| a.metric == "Request burst").unwrap();
+        assert_eq!((burst.current_value, burst.baseline_value, burst.severity), (8.0, 1.0, "high"));
+    }
+
+    #[test]
+    fn daily_spend_above_average() {
+        let s = AppSpendStats { req_24h: 200, base_day_req: 300, base_day_active: 3, ..stats() };
+        assert!(metrics(&s).contains(&"Daily spend above average".to_string()));
+    }
+
+    #[test]
+    fn budget_rules_use_policy_cents() {
+        let s = AppSpendStats { req_24h: 85, daily_budget_cents: Some(10_000.0), ..stats() };
+        assert_eq!(metrics(&s), vec!["Daily budget at 80%"]);
+        let s = AppSpendStats { req_24h: 120, ..s };
+        let a = evaluate_cost_anomalies(&s);
+        assert_eq!((a[0].metric.as_str(), a[0].severity, a[0].baseline_value), ("Daily budget exceeded", "high", 100.0));
+        let s = AppSpendStats { daily_budget_cents: None, ..s };
+        assert!(metrics(&s).is_empty());
+    }
+
+    #[test]
+    fn token_surge_reported_in_tokens() {
+        let s = AppSpendStats { tokens_1h: 50_000, base_hour_tokens: 70_000, base_hour_active: 7, ..stats() };
+        let a = evaluate_cost_anomalies(&s);
+        assert_eq!((a[0].metric.as_str(), a[0].unit), ("Token usage surge", "tokens"));
+    }
 }

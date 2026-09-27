@@ -1,9 +1,26 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, DurationRound, Utc};
 use sqlx::PgPool;
 use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::chain::{compute_record_hash, GENESIS_HASH};
+
+/// Advisory-lock key serializing all audit chain appends ("AUDITCHN").
+const AUDIT_CHAIN_LOCK_KEY: i64 = 0x4155_4449_5443_484E;
+
+/// Timestamp for the next chain record.
+///
+/// Truncated to microseconds because that is what Postgres `timestamptz`
+/// stores; hashing a nanosecond value would make the stored hash impossible to
+/// recompute from the row. Forced strictly after the predecessor so chain order
+/// and `created_at` order always agree, even when writers' clocks disagree.
+fn next_chain_timestamp(now: DateTime<Utc>, prev: Option<DateTime<Utc>>) -> DateTime<Utc> {
+    let now = now.duration_trunc(Duration::microseconds(1)).unwrap_or(now);
+    match prev {
+        Some(prev) if now <= prev => prev + Duration::microseconds(1),
+        _ => now,
+    }
+}
 
 /// Append-only audit record repository.
 /// Rule: no UPDATE or DELETE on audit_records table, ever.
@@ -30,6 +47,10 @@ impl AuditRepository {
 
     /// Append a new audit record to the chain.
     /// Automatically fetches the previous hash and computes the new hash.
+    ///
+    /// Read-latest + insert runs in one transaction under a Postgres advisory
+    /// lock, so concurrent writers (even separate gateway processes sharing the
+    /// database) cannot both chain onto the same predecessor and fork the chain.
     pub async fn append(
         &self,
         call_id: Uuid,
@@ -38,8 +59,23 @@ impl AuditRepository {
         action_taken: &str,
         metadata: Option<serde_json::Value>,
     ) -> Result<AuditRow, sqlx::Error> {
-        let prev_hash = self.get_latest_hash().await?;
-        let now = Utc::now();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(AUDIT_CHAIN_LOCK_KEY)
+            .execute(&mut *tx)
+            .await?;
+
+        let latest: Option<(String, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT record_hash, created_at FROM audit_records ORDER BY created_at DESC LIMIT 1"
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let (prev_hash, prev_ts) = match latest {
+            Some((hash, ts)) => (hash, Some(ts)),
+            None => (GENESIS_HASH.to_string(), None),
+        };
+        let now = next_chain_timestamp(Utc::now(), prev_ts);
         let id = Uuid::now_v7();
         let record_hash = compute_record_hash(&prev_hash, call_id, verdict_id, action_taken, now);
 
@@ -56,8 +92,9 @@ impl AuditRepository {
         .bind(&record_hash)
         .bind(&metadata)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         info!(
             audit_id = %id,
@@ -76,17 +113,6 @@ impl AuditRepository {
             metadata,
             created_at: now,
         })
-    }
-
-    /// Get the hash of the most recent audit record (for chaining).
-    async fn get_latest_hash(&self) -> Result<String, sqlx::Error> {
-        let result: Option<String> = sqlx::query_scalar(
-            "SELECT record_hash FROM audit_records ORDER BY created_at DESC LIMIT 1"
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(result.unwrap_or_else(|| GENESIS_HASH.to_string()))
     }
 
     /// Query audit records with filters and cursor-based pagination.
@@ -285,4 +311,29 @@ pub struct VerificationResult {
     pub valid: bool,
     pub records_checked: u64,
     pub first_broken_at: Option<Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Timelike};
+
+    #[test]
+    fn chain_timestamp_truncates_to_postgres_precision() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 24, 20, 52, 48).unwrap()
+            + Duration::nanoseconds(817_906_123);
+        let ts = next_chain_timestamp(now, None);
+        assert_eq!(ts.nanosecond(), 817_906_000);
+    }
+
+    #[test]
+    fn chain_timestamp_never_precedes_predecessor() {
+        // A writer whose clock lags the predecessor's (the cause of the historical fork).
+        let prev = Utc.with_ymd_and_hms(2026, 9, 24, 20, 52, 48).unwrap() + Duration::microseconds(817_909);
+        let lagging = prev - Duration::microseconds(3);
+        assert_eq!(next_chain_timestamp(lagging, Some(prev)), prev + Duration::microseconds(1));
+        assert_eq!(next_chain_timestamp(prev, Some(prev)), prev + Duration::microseconds(1));
+        let later = prev + Duration::milliseconds(5);
+        assert_eq!(next_chain_timestamp(later, Some(prev)), later);
+    }
 }

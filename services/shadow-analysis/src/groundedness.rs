@@ -30,13 +30,13 @@ impl GroundednessChecker {
                 return GroundednessResult {
                     score: 1.0,
                     verdict: None,
-                    duration_ms: start.elapsed().as_millis() as u32,
+                    duration_ms: start.elapsed().as_secs_f64() * 1000.0,
                 };
             }
         };
 
         let score = sentence_overlap_score(response, context_text);
-        let duration_ms = start.elapsed().as_millis() as u32;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         let verdict = if score < self.threshold {
             Some(ShadowVerdict {
@@ -67,7 +67,7 @@ impl Default for GroundednessChecker {
 pub struct GroundednessResult {
     pub score: f32,
     pub verdict: Option<ShadowVerdict>,
-    pub duration_ms: u32,
+    pub duration_ms: f64,
 }
 
 /// Sentence-level overlap scoring:

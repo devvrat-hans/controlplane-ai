@@ -152,7 +152,7 @@ impl SecretDetector {
             }
         }
 
-        let duration_ms = start.elapsed().as_millis() as u32;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         SecretDetectionResult { findings, duration_ms }
     }
@@ -208,7 +208,7 @@ impl Default for SecretDetector {
 
 pub struct SecretDetectionResult {
     pub findings: Vec<SecretFinding>,
-    pub duration_ms: u32,
+    pub duration_ms: f64,
 }
 
 pub struct SecretFinding {

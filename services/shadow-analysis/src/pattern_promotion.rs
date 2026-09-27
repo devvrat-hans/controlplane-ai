@@ -245,7 +245,7 @@ mod tests {
             outcome: Outcome::Escalate,
             confidence: 0.8,
             reason: reason.to_string(),
-            duration_ms: 5,
+            duration_ms: 5.0,
         }
     }
 

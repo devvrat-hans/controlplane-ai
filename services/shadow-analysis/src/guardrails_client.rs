@@ -56,6 +56,11 @@ struct HallucinationResponse {
     duration_ms: f64,
 }
 
+/// `Ok(Some)` = finding, `Ok(None)` = scanned and clean, `Err` = the scan did not
+/// happen (sidecar unreachable / error status / unreadable body). Callers fail open
+/// on `Err`, but can now report it instead of mistaking an outage for a pass.
+pub type ScanResult = Result<Option<ShadowVerdict>, String>;
+
 pub struct GuardrailsClient {
     base_url: String,
     http: reqwest::Client,
@@ -72,7 +77,7 @@ impl GuardrailsClient {
         }
     }
 
-    pub async fn scan_pii(&self, text: &str) -> Option<ShadowVerdict> {
+    pub async fn scan_pii(&self, text: &str) -> ScanResult {
         let url = format!("{}/scan/pii", self.base_url);
         let body = ScanRequest { text: text.to_string(), prompt: None };
 
@@ -102,7 +107,7 @@ impl GuardrailsClient {
                                 Outcome::Edit
                             };
 
-                            Some(ShadowVerdict {
+                            Ok(Some(ShadowVerdict {
                                 axis: Axis::Responsibility,
                                 check_name: "presidio-pii".to_string(),
                                 outcome,
@@ -112,30 +117,30 @@ impl GuardrailsClient {
                                     result.entities.len(),
                                     entity_summary.join(", ")
                                 ),
-                                duration_ms: result.duration_ms as u32,
-                            })
+                                duration_ms: result.duration_ms,
+                            }))
                         } else {
-                            None
+                            Ok(None)
                         }
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to parse PII response");
-                        None
+                        Err("guardrails sidecar returned an unreadable response".to_string())
                     }
                 }
             }
             Ok(resp) => {
                 warn!(status = %resp.status(), "Guardrails PII endpoint returned error");
-                None
+                Err(format!("guardrails sidecar returned HTTP {}", resp.status().as_u16()))
             }
             Err(e) => {
                 warn!(error = %e, "Failed to reach guardrails PII endpoint");
-                None
+                Err("guardrails sidecar unreachable".to_string())
             }
         }
     }
 
-    pub async fn scan_toxicity(&self, text: &str, prompt: Option<&str>) -> Option<ShadowVerdict> {
+    pub async fn scan_toxicity(&self, text: &str, prompt: Option<&str>) -> ScanResult {
         let url = format!("{}/scan/toxicity", self.base_url);
         let body = ScanRequest {
             text: text.to_string(),
@@ -161,7 +166,7 @@ impl GuardrailsClient {
                                 Outcome::Edit
                             };
 
-                            Some(ShadowVerdict {
+                            Ok(Some(ShadowVerdict {
                                 axis: Axis::Responsibility,
                                 check_name: "llm-guard-toxicity".to_string(),
                                 outcome,
@@ -170,30 +175,30 @@ impl GuardrailsClient {
                                     "LLM Guard detected toxic content (score: {:.2})",
                                     result.score
                                 ),
-                                duration_ms: result.duration_ms as u32,
-                            })
+                                duration_ms: result.duration_ms,
+                            }))
                         } else {
-                            None
+                            Ok(None)
                         }
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to parse toxicity response");
-                        None
+                        Err("guardrails sidecar returned an unreadable response".to_string())
                     }
                 }
             }
             Ok(resp) => {
                 warn!(status = %resp.status(), "Guardrails toxicity endpoint returned error");
-                None
+                Err(format!("guardrails sidecar returned HTTP {}", resp.status().as_u16()))
             }
             Err(e) => {
                 warn!(error = %e, "Failed to reach guardrails toxicity endpoint");
-                None
+                Err("guardrails sidecar unreachable".to_string())
             }
         }
     }
 
-    pub async fn scan_bias(&self, text: &str, prompt: Option<&str>) -> Option<ShadowVerdict> {
+    pub async fn scan_bias(&self, text: &str, prompt: Option<&str>) -> ScanResult {
         let url = format!("{}/scan/bias", self.base_url);
         let body = ScanRequest {
             text: text.to_string(),
@@ -217,7 +222,7 @@ impl GuardrailsClient {
                                 Outcome::Edit
                             };
 
-                            Some(ShadowVerdict {
+                            Ok(Some(ShadowVerdict {
                                 axis: Axis::Responsibility,
                                 check_name: "llm-guard-bias".to_string(),
                                 outcome,
@@ -226,30 +231,30 @@ impl GuardrailsClient {
                                     "LLM Guard detected biased content (score: {:.2})",
                                     result.score
                                 ),
-                                duration_ms: result.duration_ms as u32,
-                            })
+                                duration_ms: result.duration_ms,
+                            }))
                         } else {
-                            None
+                            Ok(None)
                         }
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to parse bias response");
-                        None
+                        Err("guardrails sidecar returned an unreadable response".to_string())
                     }
                 }
             }
             Ok(resp) => {
                 warn!(status = %resp.status(), "Guardrails bias endpoint returned error");
-                None
+                Err(format!("guardrails sidecar returned HTTP {}", resp.status().as_u16()))
             }
             Err(e) => {
                 warn!(error = %e, "Failed to reach guardrails bias endpoint");
-                None
+                Err("guardrails sidecar unreachable".to_string())
             }
         }
     }
 
-    pub async fn scan_hallucination(&self, text: &str, context: Option<&str>) -> Option<ShadowVerdict> {
+    pub async fn scan_hallucination(&self, text: &str, context: Option<&str>) -> ScanResult {
         let url = format!("{}/scan/hallucination", self.base_url);
         let body = ScanRequest {
             text: text.to_string(),
@@ -274,7 +279,7 @@ impl GuardrailsClient {
                                 Outcome::Edit
                             };
 
-                            Some(ShadowVerdict {
+                            Ok(Some(ShadowVerdict {
                                 axis: Axis::Performance,
                                 check_name: "deepeval-hallucination".to_string(),
                                 outcome,
@@ -283,26 +288,39 @@ impl GuardrailsClient {
                                     "Hallucination detected: {} (score: {:.2})",
                                     result.reason, result.score
                                 ),
-                                duration_ms: result.duration_ms as u32,
-                            })
+                                duration_ms: result.duration_ms,
+                            }))
                         } else {
-                            None
+                            Ok(None)
                         }
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to parse hallucination response");
-                        None
+                        Err("guardrails sidecar returned an unreadable response".to_string())
                     }
                 }
             }
             Ok(resp) => {
                 warn!(status = %resp.status(), "Guardrails hallucination endpoint returned error");
-                None
+                Err(format!("guardrails sidecar returned HTTP {}", resp.status().as_u16()))
             }
             Err(e) => {
                 warn!(error = %e, "Failed to reach guardrails hallucination endpoint");
-                None
+                Err("guardrails sidecar unreachable".to_string())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unreachable_sidecar_is_an_error_not_a_pass() {
+        // Port 1 on loopback refuses connections immediately.
+        let client = GuardrailsClient::new("http://127.0.0.1:1");
+        let result = client.scan_pii("hello").await;
+        assert!(matches!(result.as_ref(), Err(e) if e == "guardrails sidecar unreachable"), "got {:?}", result.map(|v| v.is_some()));
     }
 }

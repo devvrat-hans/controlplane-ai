@@ -8,6 +8,11 @@ pub type AppId = Uuid;
 pub type TeamId = Uuid;
 pub type UserId = Uuid;
 
+/// Flat price billed for every request routed through the LLM proxy, in USD.
+/// The single source of truth for cost accounting and the cost dashboard;
+/// spend = request count × this value, independent of model or token count.
+pub const COST_PER_REQUEST_USD: f64 = 1.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Axis {

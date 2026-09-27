@@ -19,7 +19,7 @@ pub struct BiasResult {
     pub overall_score: f32,
     pub category_scores: HashMap<String, f32>,
     pub verdict: Option<ShadowVerdict>,
-    pub duration_ms: u32,
+    pub duration_ms: f64,
 }
 
 /// Categories of bias to detect.
@@ -114,7 +114,7 @@ impl BiasClassifier {
         }
 
         let overall_score = category_scores.values().cloned().fold(0.0f32, f32::max);
-        let duration_ms = start.elapsed().as_millis() as u32;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         let verdict = if overall_score > self.threshold {
             let flagged_categories: Vec<&String> = category_scores

@@ -50,7 +50,7 @@ impl RetryDetector {
         entry.count += 1;
         let current_count = entry.count;
 
-        let duration_ms = start.elapsed().as_millis() as u32;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         if current_count > max_count {
             Some(FastPathVerdict {

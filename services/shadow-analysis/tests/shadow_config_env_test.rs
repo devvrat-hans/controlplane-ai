@@ -265,10 +265,12 @@ fn an_explicit_model_override_is_forwarded() {
 fn the_env_harness_actually_restores_state() {
     // If this ever fails, every other assertion in this binary is suspect: it would mean
     // one test's environment leaked into the next.
+    // Hold the lock for the whole test: reading `before` unlocked raced with other
+    // tests in this binary that set DECISION_JUDGE, making this test flaky.
+    let _lock = env_lock();
     let before = std::env::var("DECISION_JUDGE").ok();
 
     {
-        let _lock = env_lock();
         let _env = EnvGuard::set(&[("DECISION_JUDGE", "laya")]);
         assert!(ShadowConfig::default().decision_judge_enabled);
     }

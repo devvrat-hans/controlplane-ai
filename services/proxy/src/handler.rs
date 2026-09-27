@@ -107,6 +107,9 @@ pub async fn proxy_handler(
     let upstream_response = match upstream_request.send().await {
         Ok(resp) => resp,
         Err(e) => {
+            // Strip the URL: some providers (Gemini) carry the API key as a query
+            // parameter, and reqwest's error text embeds the full request URL.
+            let e = e.without_url();
             error!(
                 correlation_id = %correlation_id,
                 error = %e,
@@ -116,7 +119,9 @@ pub async fn proxy_handler(
         }
     };
 
-    let upstream_latency_ms = upstream_start.elapsed().as_millis() as i32;
+    // Fractional ms for exact display; the integer column keeps whole ms for older readers.
+    let upstream_elapsed_ms = upstream_start.elapsed().as_secs_f64() * 1000.0;
+    let upstream_latency_ms = upstream_elapsed_ms as i32;
     let upstream_status = upstream_response.status();
     let upstream_headers = upstream_response.headers().clone();
 
@@ -124,6 +129,7 @@ pub async fn proxy_handler(
     let response_body = match upstream_response.bytes().await {
         Ok(bytes) => bytes,
         Err(e) => {
+            let e = e.without_url();
             error!(
                 correlation_id = %correlation_id,
                 error = %e,
@@ -169,7 +175,8 @@ pub async fn proxy_handler(
     let fast_path_result = run_fast_path_safe(
         &state.fast_path, &response_body, output_tokens, &request_body, correlation_id, app_max_tokens,
     ).await;
-    let fast_path_latency_ms = fast_path_start.elapsed().as_millis() as i32;
+    let fast_path_elapsed_ms = fast_path_start.elapsed().as_secs_f64() * 1000.0;
+    let fast_path_latency_ms = fast_path_elapsed_ms as i32;
 
     // Apply edits if any
     let final_response_body = if !fast_path_result.edits.is_empty() {
@@ -190,8 +197,9 @@ pub async fn proxy_handler(
         if let Err(e) = sqlx::query(
             "INSERT INTO intercepted_calls \
              (id, correlation_id, app_id, model, request_payload, response_payload, \
-              token_count_input, token_count_output, upstream_latency_ms, fast_path_latency_ms, session_id, has_tool_use, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW()) \
+              token_count_input, token_count_output, upstream_latency_ms, fast_path_latency_ms, session_id, has_tool_use, \
+              upstream_latency_us, fast_path_latency_us, fast_path_check_timings_us, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()) \
              ON CONFLICT (id) DO NOTHING"
         )
         .bind(correlation_id)
@@ -206,6 +214,9 @@ pub async fn proxy_handler(
         .bind(fast_path_latency_ms)
         .bind(session_id)
         .bind(has_tool_use)
+        .bind(ms_to_us(upstream_elapsed_ms))
+        .bind(ms_to_us(fast_path_elapsed_ms))
+        .bind(&fast_path_result.check_timings_us)
         .execute(pool)
         .await {
             warn!(error = %e, correlation_id = %correlation_id, "Failed to persist intercepted_call");
@@ -222,7 +233,7 @@ pub async fn proxy_handler(
             Verdict::new(
                 correlation_id, Axis::Responsibility, VerdictPath::Fast,
                 Outcome::Pass, 1.0, "Responsibility checks passed", "fast-path-summary",
-            ).with_duration(fast_path_latency_ms),
+            ).with_duration_precise(fast_path_elapsed_ms),
             Verdict::new(
                 correlation_id, Axis::Performance, VerdictPath::Fast,
                 Outcome::Pass, 1.0, "Performance checks passed", "fast-path-summary",
@@ -270,7 +281,7 @@ pub async fn proxy_handler(
         });
 
         publish_call_async(
-            &state.publisher, correlation_id, app_id, &request_body, &response_body,
+            &state.publisher, correlation_id, app_id, &model_in_body, &request_body, &response_body,
             input_tokens, output_tokens, upstream_latency_ms, fast_path_latency_ms,
         ).await;
 
@@ -281,6 +292,7 @@ pub async fn proxy_handler(
     let publisher = state.publisher.clone();
     let req_body_clone = request_body.clone();
     let resp_body_clone = response_body.clone();
+    let model_for_capture = model_in_body.clone();
 
     tokio::spawn(async move {
         let shadow_req = ShadowAnalysisRequest {
@@ -303,6 +315,12 @@ pub async fn proxy_handler(
                 warn!(error = %e, "Failed to publish shadow analysis request");
             }
         }
+
+        // Captured-call event for cost accounting (blocked calls publish theirs above).
+        publish_call_async(
+            &publisher, correlation_id, app_id, &model_for_capture, &req_body_clone, &resp_body_clone,
+            input_tokens, output_tokens, upstream_latency_ms, fast_path_latency_ms,
+        ).await;
     });
 
     let total_latency_ms = start.elapsed().as_millis();
@@ -394,8 +412,13 @@ async fn run_fast_path_safe(
                     v.confidence,
                     &v.reason,
                     &v.check_name,
-                ).with_duration(v.duration_ms as i32)
+                ).with_duration_precise(v.duration_ms)
             }).collect();
+            let check_timings_us = serde_json::Value::Object(
+                result.check_timings.iter()
+                    .map(|t| (t.check_name.to_string(), serde_json::json!(ms_to_us(t.duration_ms))))
+                    .collect(),
+            );
 
             FastPathSafeResult {
                 outcome: result.outcome,
@@ -405,6 +428,7 @@ async fn run_fast_path_safe(
                     .find(|v| v.outcome == Outcome::Block)
                     .map(|v| v.reason.clone()),
                 has_tool_use: result.has_tool_use,
+                check_timings_us: Some(check_timings_us),
             }
         }
         Ok(Err(e)) => {
@@ -424,6 +448,14 @@ struct FastPathSafeResult {
     verdicts: Vec<Verdict>,
     block_reason: Option<String>,
     has_tool_use: bool,
+    /// `{check_name: microseconds}` for every fast-path check that ran; `None`
+    /// when the fast path failed open (panic/timeout) and nothing was measured.
+    check_timings_us: Option<serde_json::Value>,
+}
+
+/// Fractional milliseconds → whole microseconds.
+fn ms_to_us(ms: f64) -> i64 {
+    (ms.max(0.0) * 1000.0).round() as i64
 }
 
 impl FastPathSafeResult {
@@ -434,6 +466,7 @@ impl FastPathSafeResult {
             verdicts: Vec::new(),
             block_reason: None,
             has_tool_use: false,
+            check_timings_us: None,
         }
     }
 }
@@ -542,6 +575,7 @@ async fn publish_call_async(
     publisher: &Arc<dyn EventPublisher>,
     correlation_id: Uuid,
     app_id: Uuid,
+    model: &str,
     _request_body: &[u8],
     _response_body: &[u8],
     _input_tokens: Option<i32>,
@@ -551,7 +585,7 @@ async fn publish_call_async(
 ) {
     let payload = controlplane_common::events::InterceptCapturedPayload {
         call_id: correlation_id,
-        model: "unknown".to_string(),
+        model: model.to_string(),
         token_count_input: _input_tokens,
         token_count_output: _output_tokens,
         upstream_latency_ms: Some(_upstream_latency_ms),
