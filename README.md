@@ -3,7 +3,7 @@
 > **From AI calls to governed AI calls — in under 10ms.**
 >
 > ![Rust](https://img.shields.io/badge/Rust-1.75+-orange?logo=rust)
-> ![Tests](https://img.shields.io/badge/Tests-534%20%2B%20116-green)
+> ![Tests](https://img.shields.io/badge/Tests-532%20%2B%20117-green)
 > ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 > ![Round 2](https://img.shields.io/badge/Round%202-Complete-brightgreen)
 
@@ -93,7 +93,7 @@ than no governance at all.
 | Session Risk Accumulator   | Fast-Path  | Multi-turn compounding risk             | <1ms    |
 | Tool-Use Detection         | Fast-Path  | function_call/tool_use + 1.5x multiplier| <1ms    |
 | Prompt Injection Detection | Shadow     | 3-layer: pattern, structural, encoding  | <2s     |
-| Hallucination Detection    | Shadow     | DeepEval LLM-as-a-judge                 | <2s     |
+| Hallucination Detection    | Shadow     | Laya decision model (needs context)     | <2s     |
 | Groundedness Scoring       | Shadow     | NLI model                               | <2s     |
 | Verbosity Detection        | Shadow     | Token cost optimization                 | <2s     |
 | Semantic PII Detection     | Shadow     | NER-based PII on responses              | <2s     |
@@ -128,7 +128,7 @@ App → ControlPlane Proxy (:8900) → AI Model Provider (Ollama/OpenCode/Anthro
               │
               └── Shadow Path (async, <2s)
                     ├── Prompt injection detection (25+ patterns)
-                    ├── Hallucination scoring (DeepEval)
+                    ├── Hallucination scoring (Laya)
                     ├── Groundedness scoring (NLI model)
                     ├── Verbosity detection
                     ├── Semantic PII detection (NER)
@@ -152,7 +152,7 @@ App → ControlPlane Proxy (:8900) → AI Model Provider (Ollama/OpenCode/Anthro
 | ------------------ | --------------------------------------------------------- |
 | Proxy + fast-path  | Rust (hyper, arc-swap for lock-free policy cache)         |
 | Shadow analysis    | Rust (tokio async, prompt injection detection)            |
-| Guardrails sidecar | Python (Presidio, LLM Guard, DeepEval)                    |
+| Guardrails sidecar | Python (Presidio, LLM Guard)                              |
 | Decision / Policy  | Rust (axum)                                               |
 | Audit              | Rust, SHA-256 hash chain, PostgreSQL                      |
 | Messaging          | NATS (or in-process broker — same contracts)              |
@@ -831,43 +831,52 @@ total, and **each fast-path check individually — including checks that pass**
 (`intercepted_calls.fast_path_check_timings_us`). The shadow path does the same:
 when it finishes it publishes one run record per shadow check —
 `ran` (with wall time), `skipped` (with the reason, e.g. "disabled by policy",
-"no grounding context in request", "decision judge off") or `error` (e.g. guardrails
+"no grounding context in request", "Laya not configured") or `error` (e.g. guardrails
 sidecar unreachable) — which the decision service stores in
 `intercepted_calls.shadow_check_runs`. So every row has a time or an explicit
 **NOT RUN** / **ERROR** verdict, not just the checks that found something.
-Sidecar findings (`presidio-pii`, `llm-guard-toxicity`, `deepeval-hallucination`,
+Sidecar and Laya findings (`presidio-pii`, `llm-guard-toxicity`, `laya-hallucination`,
 `input-toxicity`, `input-bias`) are shown on their check's row. The table shows e.g. `0.042ms`,
 `3.271ms`, `812.4ms`; `<0.001ms` means below the 1 µs timer resolution. Requests
 recorded before these columns existed only have whole milliseconds, so a stored
 `0` still renders as `<1ms`, fast checks without per-check data show an estimate
 prefixed with `~`, and shadow checks without run records show `—`.
 
-### Hallucination check and decision judge
+### Hallucination check (Laya)
 
-- **Hallucination** needs something to check the answer against, so it runs only
-  when the request carries grounding context — a `system` message (or top-level
-  `system` field). Otherwise the row reads *NOT RUN — no grounding context in
-  request*. By default the sidecar uses a deterministic **fact-grounding check**:
-  names and numbers in the answer that never appear in the context are treated as
-  invented (e.g. "24/7", "45 days", "Zendesk" against a context that says
-  "Mon–Fri 9–5, 7 business days"), in under a millisecond. DeepEval's LLM judge is
-  opt-in via `HALLUCINATION_JUDGE_MODEL` (a capable Ollama model) or
-  `OPENAI_API_KEY`: the demo model `qwen2.5:1.5b` returned inverted verdicts and
-  needed 7–14 s per call, beyond the shadow worker's 5 s sidecar timeout.
-- **Decision judge (Laya)** is optional and off by default. Enable it with
-  `DECISION_JUDGE=laya` in `.env` (only `laya`/`jev` count — `on` does nothing), then
-  `docker compose --profile judge up -d --build` and recreate the gateway
-  (`docker compose up -d gateway`). Notes from bringing it up on a CPU-only box:
-  - The image installs **CPU-only PyTorch** (the default wheel pulls several GB of
-    CUDA libraries a CPU container never uses) — ~1.7 GB image.
-  - Checkpoints are cached in the `laya_models` volume, so they download once.
-    `LAYA_PRELOAD=0` serves as soon as the English checkpoint is ready and loads the
-    multilingual one on first non-English request (its ~650 MB download repeatedly
-    stalled here, and with preload the server never opened its port).
-  - One judge call answers ~12 governance questions: ~4 s on an idle CPU, 5–8 s under
-    load, so `LAYA_TIMEOUT_MS` is 15000 (it runs in the async shadow path and never
-    delays the response). If the judge can't answer in time its row reads **ERROR**
-    rather than a silent pass; the first call after a restart also loads the model.
+Hallucination is checked by the **Laya decision model** (the `laya` service, started
+by default) on **every request**:
+
+- **With grounding context** (a `system` message or top-level `system` field): one
+  Laya call asks whether the response asserts facts the context doesn't support, how
+  severe they are, and how well it is grounded → `laya-hallucination` /
+  `laya-groundedness`.
+- **Without context**: it judges the answer against the question itself — does the
+  response contain false or invented facts, and how severe are they →
+  `laya-hallucination` (groundedness needs a source, so it is skipped).
+- Sub-threshold readings are kept as `-evidence`. It only scores; the decision engine
+  decides.
+- **Limitation — without context Laya can't judge truth.** It is a small classifier with
+  no world knowledge: in testing it gave "William Shakespeare wrote Romeo and Juliet"
+  a *higher* probability of being false (0.47) than "…written by Charles Dickens in 1950"
+  (0.40). Its no-context readings stay below the action thresholds, so they don't block
+  or escalate, but they also don't catch false facts. Send grounding context (a system
+  message) when hallucination detection matters.
+- Settings: `LAYA_URL` (compose: `http://laya:8000`; unset it to skip the check) and
+  `LAYA_TIMEOUT_MS` (10000). If Laya doesn't answer in time the row reads **ERROR**
+  rather than a silent pass. The per-app *Hallucination Detection* toggle on the
+  Policies page turns it off.
+- The Laya image installs **CPU-only PyTorch** (~1.7 GB image). Checkpoints are cached
+  in the `laya_models` volume; `LAYA_PRELOAD=0` serves as soon as the English checkpoint
+  is ready (the multilingual one loads on first non-English request). The first call
+  after a restart also loads the model, so it can take longer.
+- Laya's raw probabilities are uncalibrated until a fit exists in `detector_calibration`
+  (`scripts/eval_accuracy.sh`), so treat its readings as evidence first.
+
+The previous general **decision judge** (one batched Laya call scoring every governance
+question) and the **DeepEval** sidecar check were removed: the judge produced false
+positives on normal traffic while uncalibrated, and DeepEval needed an LLM judge model
+that was too weak/slow locally.
 
 ### Keyboard Shortcuts
 
@@ -922,10 +931,10 @@ Press `?` anywhere in the dashboard to open the shortcuts modal. Quick navigatio
 **All OS (same commands):**
 
 ```bash
-# All Rust tests (534 tests)
+# All Rust tests (532 tests)
 cargo test --workspace
 
-# All frontend tests (116 tests across 10 files)
+# All frontend tests (117 tests across 11 files)
 cd frontend && npx vitest run
 
 # Fast-path benchmarks
@@ -937,23 +946,23 @@ cargo bench -p controlplane-fast-path
 
 **Test Results:**
 
-- Rust: 534 tests, 0 failures (unit + integration + DB)
-- Frontend: 116 of 116 pass. (The header app-selector test was stale — it expected
+- Rust: 532 tests, 0 failures (unit + integration + DB)
+- Frontend: 117 of 117 pass. (The header app-selector test was stale — it expected
   four hard-coded apps; the selector now loads apps from `/api/v1/apps`, and the
   test mocks that provider.)
 - DB integration: 4 reviewer-override RAG tests
 
-### Policies Page Toggle Tests (41 tests)
+### Policies Page Toggle Tests (39 tests)
 
 
 | Category            | Tests | Coverage                                                       |
 | ------------------- | ----- | -------------------------------------------------------------- |
-| Rendering           | 7     | All 11 toggles, labels, aria-labels, provider badges           |
+| Rendering           | 6     | All 10 toggles, labels, aria-labels, provider badges           |
 | Default state       | 3     | All enabled, all disabled, mixed policy                        |
 | Click behavior      | 6     | Enable/disable, double-click, single toggle isolation, all-off |
-| Count badge         | 5     | 11/11, 0/11, decrement, increment on re-enable                 |
+| Count badge         | 5     | 10/10, 0/10, decrement, increment on re-enable                 |
 | Viewer restrictions | 4     | Disabled switches, click ignored, count unchanged              |
-| Save payload        | 4     | PUT includes all 11 states incl. judge opt-out, correct app    |
+| Save payload        | 3     | PUT includes all 10 states, correct app                        |
 | App switching       | 1     | Switching apps loads different states                          |
 | API fallback        | 5     | Empty/null/partial config, fetch failure, 404                  |
 | Visual state        | 6     | Emerald bg/border for enabled, neutral for disabled            |
@@ -1056,7 +1065,7 @@ The architecture is designed so that the proxy never blocks on downstream servic
 | `escalation`      | Human review queue                                          | Implemented |
 | `dashboard-api`   | BFF: REST + SSE for frontend                                | Implemented || `notification`    | Alert delivery: Slack/webhook on block/escalate            | Implemented |
 | `mcp-server`      | MCP server: typed tools + resources for external agents     | Implemented |
-| `guardrails`      | Python sidecar: Presidio, LLM Guard, DeepEval (not a Rust crate) | Implemented |
+| `guardrails`      | Python sidecar: Presidio, LLM Guard (not a Rust crate)          | Implemented |
 | `gateway`         | Binary entrypoint (starts everything)                       | Implemented |
 
 
@@ -1344,7 +1353,7 @@ FP rate = (overrides + dismissals) / total resolved escalations per check. Red h
 
 ## 17a. Security Status & Known Limitations
 
-Honest status per AGENTS.md ("label scaffolded code `SCAFFOLD`"):
+Honest status — anything scaffolded but not implemented is labelled `SCAFFOLD`:
 
 | Area | Status |
 |---|---|

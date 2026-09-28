@@ -34,7 +34,7 @@ use controlplane_common::types::{Axis, Outcome};
 
 use crate::calibration::{Calibration, Primitive};
 use crate::governance_questions::{
-    build_questions, GovernanceState, POSITIVE_OPTION, Q_BIAS_CATEGORY, Q_BIAS_PRESENT,
+    build_hallucination_questions, build_questions, GovernanceState, POSITIVE_OPTION, Q_BIAS_CATEGORY, Q_BIAS_PRESENT,
     Q_FILLER_RATIO, Q_GROUNDEDNESS, Q_HALLUCINATION, Q_HALLUCINATION_SEVERITY, Q_INJECTION_ATTEMPT,
     Q_INJECTION_FAMILY, Q_IS_REIDENTIFIABLE, Q_REID_TYPE, Q_TOOL_CALL_RISK, Q_TOXICITY_SEVERITY,
 };
@@ -258,6 +258,15 @@ struct LayaResponse {
     model: Option<String>,
 }
 
+/// Which questions a Laya call asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuestionSet {
+    /// The full governance batch (every question in `build_questions`).
+    Governance,
+    /// Only the hallucination/groundedness questions.
+    Hallucination,
+}
+
 /// Client for the decision-model judge.
 pub struct LayaClient {
     base_url: String,
@@ -316,6 +325,17 @@ impl LayaClient {
     /// (unreachable, timed out, bad response) as `Err` instead of an empty list, so the
     /// caller can record the outage rather than mistake it for "no findings".
     pub async fn evaluate_detailed(&self, state: &GovernanceState) -> Result<Vec<ShadowVerdict>, String> {
+        self.evaluate_questions(state, QuestionSet::Governance).await
+    }
+
+    /// Hallucination check: asks Laya only the three grounding questions
+    /// (hallucination, severity, groundedness). Requires grounding context — callers
+    /// skip the check when there is none. `Err` when Laya never answered.
+    pub async fn evaluate_hallucination(&self, state: &GovernanceState) -> Result<Vec<ShadowVerdict>, String> {
+        self.evaluate_questions(state, QuestionSet::Hallucination).await
+    }
+
+    async fn evaluate_questions(&self, state: &GovernanceState, set: QuestionSet) -> Result<Vec<ShadowVerdict>, String> {
         let started = Instant::now();
         let deadline = started + Duration::from_millis(self.timeout_ms);
         let windows = state.windows();
@@ -335,7 +355,7 @@ impl LayaClient {
                 break;
             }
 
-            if let Some((answers, window_model)) = self.evaluate_window(window).await {
+            if let Some((answers, window_model)) = self.evaluate_window(window, set).await {
                 model = window_model.or(model);
                 answered.push(answers);
             }
@@ -378,12 +398,17 @@ impl LayaClient {
     async fn evaluate_window(
         &self,
         state: &GovernanceState,
+        set: QuestionSet,
     ) -> Option<(HashMap<String, LayaAnswer>, Option<String>)> {
         let url = format!("{}/v1/systemone", self.base_url);
 
+        let questions = match set {
+            QuestionSet::Governance => build_questions(state.has_context()),
+            QuestionSet::Hallucination => build_hallucination_questions(state.has_context()),
+        };
         let mut body = serde_json::json!({
             "state": state.to_json(),
-            "questions": build_questions(state.has_context()),
+            "questions": questions,
         });
         if let Some(model) = &self.model {
             body["model"] = serde_json::json!(model);
@@ -618,8 +643,12 @@ pub fn map_answers_calibrated(
         suffix.push_str(&format!(" [{window_count} windows max-pooled]"));
     }
 
-    // ── Performance: hallucination (requires context to compare against) ──────────
-    if has_context {
+    // ── Performance: hallucination ──────────────────────────────────────────────────
+    // Mapped whenever it was asked: against the grounding context when there is one,
+    // otherwise against the question (see `build_hallucination_questions`). The full
+    // governance batch only asks it with context, so that path is unchanged.
+    let against = if has_context { "unsupported by the context" } else { "false or invented" };
+    {
         let scale = scale_for(Q_HALLUCINATION);
         if let Some(answer) = answers.get(Q_HALLUCINATION) {
             if let Some(risk) = calibrated_risk(scale, answer, calibration) {
@@ -641,7 +670,7 @@ pub fn map_answers_calibrated(
                         outcome,
                         confidence: risk as f32,
                         reason: format!(
-                            "Laya judge: {:.0}% probability the response states facts unsupported by the context{}",
+                            "Laya: {:.0}% probability the response states facts {against}{}",
                             risk * 100.0,
                             severity
                                 .map(|s| format!(" (severity {s:.2})"))
@@ -655,7 +684,7 @@ pub fn map_answers_calibrated(
                         scale,
                         risk,
                         &format!(
-                            "Laya judge: {:.0}% probability the response states facts unsupported by the context.",
+                            "Laya: {:.0}% probability the response states facts {against}.",
                             risk * 100.0
                         ),
                         &suffix,
@@ -666,8 +695,9 @@ pub fn map_answers_calibrated(
         }
 
         // ── Performance: groundedness (inverted polarity — strong support = low risk) ──
+        // Groundedness means "supported by a source": only meaningful with context.
         let scale = scale_for(Q_GROUNDEDNESS);
-        if let Some(answer) = answers.get(Q_GROUNDEDNESS) {
+        if let Some(answer) = answers.get(Q_GROUNDEDNESS).filter(|_| has_context) {
             if let Some(risk) = calibrated_risk(scale, answer, calibration) {
                 match classify(risk) {
                     Some(outcome) => verdicts.push(ShadowVerdict {
@@ -1000,14 +1030,17 @@ mod tests {
     }
 
     #[test]
-    fn context_checks_are_skipped_without_context() {
+    fn without_context_hallucination_is_judged_against_the_question() {
         let answers = build(&[
             (Q_HALLUCINATION, ab(0.99)),
             (Q_GROUNDEDNESS, rubric(0.0, 0.9)),
         ]);
         let verdicts = map_answers(&answers, false, false, 7.0);
 
-        assert!(find(&verdicts, "laya-hallucination").is_none());
+        // Hallucination is always mapped when asked — against the question here.
+        let verdict = find(&verdicts, "laya-hallucination").expect("hallucination verdict");
+        assert!(verdict.reason.contains("false or invented"), "{}", verdict.reason);
+        // Groundedness needs a source to be grounded in.
         assert!(find(&verdicts, "laya-groundedness").is_none());
     }
 
@@ -1259,10 +1292,10 @@ mod tests {
     }
 
     #[test]
-    fn evidence_requires_context_for_context_checks() {
+    fn hallucination_evidence_is_kept_with_or_without_context() {
         let answers = build(&[(Q_HALLUCINATION, ab(0.55))]);
 
-        assert!(find(&map_answers(&answers, false, false, 7.0), "laya-hallucination-evidence").is_none());
+        assert!(find(&map_answers(&answers, false, false, 7.0), "laya-hallucination-evidence").is_some());
         assert!(find(&map_answers(&answers, true, false, 7.0), "laya-hallucination-evidence").is_some());
     }
 

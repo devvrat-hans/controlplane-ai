@@ -4,8 +4,8 @@
 # TypeSafe's Jev, so the Rust shadow-analysis client can talk to either backend by
 # changing a base URL. See docs/analysis/laya-integration-plan.md.
 #
-# The judge is OFF by default: set DECISION_JUDGE=laya and LAYA_URL=http://laya:8000
-# on the gateway to enable it. With DECISION_JUDGE=off this container is never called.
+# The gateway uses it for the hallucination check whenever LAYA_URL is set (docker
+# compose sets LAYA_URL=http://laya:8000); unset LAYA_URL to skip that check.
 
 FROM python:3.11-slim
 
@@ -24,6 +24,9 @@ RUN pip install --no-cache-dir "laya[serve]>=0.3.11"
 # ~647 MB multilingual). This makes the image much larger but removes the cold-start
 # model download. Off by default so `docker compose up --build` stays fast.
 # RUN python -c "import laya; laya.load('convaiinnovations/laya')"
+
+# Healthcheck + watchdog: restarts a deadlocked laya-serve (see healthcheck.py).
+COPY healthcheck.py /app/healthcheck.py
 
 EXPOSE 8000
 

@@ -96,7 +96,7 @@ pub struct VerdictPayload {
 /// so this is the only record of checks that ran and passed, or never ran.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShadowCheckRun {
-    /// Dashboard check name (e.g. `groundedness`, `pii`, `decision_judge`).
+    /// Dashboard check name (e.g. `groundedness`, `pii`, `hallucination`).
     pub check_name: String,
     pub status: ShadowCheckStatus,
     /// Wall time of the check task in microseconds; `None` when it didn't run.

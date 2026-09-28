@@ -12,8 +12,9 @@
 # Usage:
 #   CPU only:  docker compose up --build
 #   With GPU:  docker compose --profile gpu up --build
-#   With the optional Laya decision-model judge:
-#              DECISION_JUDGE=laya docker compose --profile judge up --build
+#
+# The `laya` service (Laya decision model) answers the hallucination check; it starts by
+# default and downloads its ~800 MB English checkpoint on first start.
 #
 # The GPU profile uses NVIDIA CUDA. Requires nvidia-container-toolkit installed on host.
 # If no GPU is available, use the default (CPU) mode — it works out of the box.
@@ -28,6 +29,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: controlplane-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: controlplane
       POSTGRES_PASSWORD: secret
@@ -50,6 +52,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: controlplane-ollama
+    restart: unless-stopped
     ports:
       # Host port is configurable: a native Ollama install already owns 11434 on
       # many machines. The stack itself reaches this container as ollama:11434.
@@ -81,18 +84,14 @@ services:
       context: ./services/guardrails
       dockerfile: Dockerfile
     container_name: controlplane-guardrails
+    # Come back after a crash (e.g. an OOM kill) or a Docker/host restart.
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8200:8200"
     environment:
       PORT: "8200"
       TOXICITY_THRESHOLD: "0.7"
       BIAS_THRESHOLD: "0.66"
-      # Hallucination: deterministic fact-grounding check by default. Set
-      # HALLUCINATION_JUDGE_MODEL (a capable Ollama model) or OPENAI_API_KEY in .env to
-      # use DeepEval's LLM judge instead — qwen2.5:1.5b is too weak/slow for it.
-      HALLUCINATION_JUDGE_MODEL: ${HALLUCINATION_JUDGE_MODEL:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OLLAMA_BASE_URL: http://ollama:11434
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
       interval: 10s
@@ -100,17 +99,20 @@ services:
       retries: 5
       start_period: 60s
 
-  # --- Laya decision-model judge (OPTIONAL — off by default) ---
-  # A Jev-compatible non-autoregressive "System One" decision model. The shadow path can
-  # use it as one extra calibrated voter. It is NOT called unless DECISION_JUDGE is set to
-  # laya|jev, and it lives behind the `judge` profile so a normal `docker compose up` is
-  # unchanged. See docs/analysis/laya-integration-plan.md.
+  # --- Laya decision model: answers the hallucination check ---
+  # A Jev-compatible non-autoregressive "System One" decision model. The shadow path asks
+  # it only whether a response is supported by the request's grounding context
+  # (hallucination, severity, groundedness). Scores only; the decision engine decides.
   laya:
-    profiles: ["judge"]
     build:
       context: ./services/laya
       dockerfile: Dockerfile
     container_name: controlplane-laya
+    # Keep it up across crashes and Docker restarts.
+    restart: unless-stopped
+    # Run a minimal init as PID 1 so laya-serve is a normal child process: the
+    # healthcheck watchdog must be able to kill it, and PID 1 ignores signals.
+    init: true
     ports:
       - "127.0.0.1:8300:8000"
     environment:
@@ -118,21 +120,31 @@ services:
       # Lazy-load checkpoints: serve as soon as the English checkpoint is ready and load
       # the multilingual one on first non-English request. With preload ("1") the server
       # won't listen until BOTH are downloaded, and the ~650 MB multilingual download
-      # repeatedly stalled here, leaving the judge down. Set "1" once both are cached.
+      # repeatedly stalled here, leaving Laya down. Set "1" once both are cached.
       LAYA_PRELOAD: "0"
       # Fail a stalled Hugging Face download instead of hanging on it forever.
       HF_HUB_DOWNLOAD_TIMEOUT: "60"
       HF_HUB_ETAG_TIMEOUT: "30"
+      # laya-serve deadlocked twice after bursts of concurrent requests (all threads
+      # asleep, nothing answered). Disable the HF tokenizers' internal thread pool and pin
+      # the torch/OpenMP pools — the standard fix for tokenizer/torch thread deadlocks in
+      # multi-threaded servers. The healthcheck watchdog below covers anything left.
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
     volumes:
       # Persist the ~1.4 GB of Hugging Face checkpoints so a rebuild/recreate doesn't
       # download them again.
       - laya_models:/root/.cache/huggingface
     healthcheck:
-      # TCP check: does not assume a particular HTTP endpoint on the model server.
-      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), 2)"]
-      interval: 10s
-      timeout: 10s
-      retries: 5
+      # Real HTTP request + watchdog: 3 attempts x 10 s; if laya-serve never answers
+      # (deadlocked with its port still open), healthcheck.py kills PID 1 and
+      # `restart: unless-stopped` restarts the container. Docker never restarts a
+      # container just for being unhealthy, so without this a hang lasts until noticed.
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 30s
+      timeout: 45s
+      retries: 2
       start_period: 180s
 
   # --- Rust Gateway (Proxy + Dashboard API + All Workers) ---
@@ -141,6 +153,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: controlplane-gateway
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgres://controlplane:secret@postgres:5432/controlplane
       EVENT_BUS: inproc
@@ -150,16 +163,16 @@ services:
       UPSTREAM_BASE_URL: http://ollama:11434
       UPSTREAM_MODEL: qwen2.5:1.5b
       GUARDRAILS_URL: http://guardrails:8200
+      # Per-scan timeout for the guardrails sidecar (PII, toxicity, bias).
+      GUARDRAILS_TIMEOUT_MS: "10000"
       JWT_SECRET: change-me-in-production
       SEED_DEMO_USERS: "true"
-      # Decision-model judge (optional). Default "off" keeps the shadow path exactly as
-      # it was; set DECISION_JUDGE=laya and start the `judge` profile to enable it.
-      DECISION_JUDGE: ${DECISION_JUDGE:-off}
+      # Laya answers the hallucination check (3 questions per call, only when the request
+      # carries grounding context). Unset LAYA_URL to skip that check.
       LAYA_URL: http://laya:8000
-      # Measured on CPU: ~0.45 s for 1 question, ~4.1 s for the ~12-question batch on an
-      # idle box — over 5 s once Ollama and the guardrails models share the CPU. The judge
-      # runs in the async shadow path (never delays the response), so allow 15 s.
-      LAYA_TIMEOUT_MS: "15000"
+      # Per-call budget for the Laya hallucination check (async shadow path; never delays
+      # the response).
+      LAYA_TIMEOUT_MS: "10000"
       RUST_LOG: controlplane=info,tower_http=info
     ports:
       - "127.0.0.1:8900:8900"
@@ -184,6 +197,7 @@ services:
       context: .
       dockerfile: services/mcp-server/Dockerfile
     container_name: controlplane-mcp
+    restart: unless-stopped
     environment:
       MCP_TRANSPORT: http
       MCP_HTTP_ADDR: 0.0.0.0:8090
@@ -223,6 +237,7 @@ services:
         #   NPM_REGISTRY=https://registry.npmmirror.com docker compose up --build
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
     container_name: controlplane-frontend
+    restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
       NEXT_PUBLIC_PROXY_URL: ${NEXT_PUBLIC_PROXY_URL:-http://localhost:8900}
@@ -243,6 +258,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     container_name: controlplane-nginx
+    restart: unless-stopped
     volumes:
       - ./infra/nginx/docker.conf:/etc/nginx/nginx.conf:ro
     ports:

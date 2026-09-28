@@ -915,10 +915,6 @@ struct PolicyUpdate {
     groundedness_enabled: Option<bool>,
     verbosity_enabled: Option<bool>,
     semantic_pii_enabled: Option<bool>,
-    // Decision-model judge (Laya / Jev). The process-level master switch is the
-    // DECISION_JUDGE env var; this per-app flag can only opt an app OUT. Omitted means
-    // "keep it on", so a policy save never silently disables the judge.
-    decision_judge_enabled: Option<bool>,
 }
 
 async fn get_policy(
@@ -987,15 +983,13 @@ async fn get_policy(
 ///
 /// - performance row: { groundedness_threshold, hallucination_action,
 ///   block_threshold, escalate_threshold,
-///   checks: { groundedness_enabled, hallucination_detection_enabled, verbosity_enabled,
-///   decision_judge_enabled } }
+///   checks: { groundedness_enabled, hallucination_detection_enabled, verbosity_enabled } }
 /// - cost row: { max_tokens_per_request, retry_max, daily_budget_cents }
 /// - responsibility: { bias_threshold, pii_action, unsafe_action, unsafe_keywords,
 ///   block_threshold, escalate_threshold,
 ///   checks: { unsafe_content_enabled, secret_detection_enabled,
 ///   prompt_injection_enabled, semantic_pii_enabled,
-///   pii_detection, toxicity_detection, bias_detection,
-///   decision_judge_enabled } }
+///   pii_detection, toxicity_detection, bias_detection } }
 ///
 /// Consumers:
 /// - fast-path reloader (`policy_reload.rs`) reads max_tokens_per_request / retry_max /
@@ -1019,7 +1013,6 @@ async fn update_policy(
     let retry_max = body.retry_max_count.unwrap_or(3);
     let unsafe_content_on = body.unsafe_content_enabled.unwrap_or(true);
     let secret_on = body.secret_detection_enabled.unwrap_or(true);
-    let decision_judge_on = body.decision_judge_enabled.unwrap_or(true);
 
     let performance_config = serde_json::json!({
         "groundedness_threshold": escalate,
@@ -1030,9 +1023,6 @@ async fn update_policy(
             "groundedness_enabled": body.groundedness_enabled.unwrap_or(true),
             "hallucination_detection_enabled": body.hallucination_detection_enabled.unwrap_or(true),
             "verbosity_enabled": body.verbosity_enabled.unwrap_or(true),
-            // Written to both axes with the same value: the toggle store merges every
-            // active policy row, and get_policy returns the first `checks` object it sees.
-            "decision_judge_enabled": decision_judge_on,
         },
     });
 
@@ -1056,7 +1046,6 @@ async fn update_policy(
             "pii_detection": body.pii_detection.unwrap_or(true),
             "toxicity_detection": body.toxicity_detection.unwrap_or(true),
             "bias_detection": body.bias_detection.unwrap_or(true),
-            "decision_judge_enabled": decision_judge_on,
         },
     });
 
@@ -1147,13 +1136,11 @@ struct SystemConfig {
     database_connected: bool,
     database_engine: String,
     database_name: String,
-    /// Decision-model judge status, reported honestly (plan §10):
-    /// `off` | `laya` | `jev`. `off` means no judge call is ever made.
-    decision_judge: String,
-    /// Whether a judge endpoint is configured for the active mode.
-    decision_judge_configured: bool,
-    decision_judge_url: Option<String>,
-    decision_judge_timeout_ms: u64,
+    /// Whether the Laya decision model is configured (`LAYA_URL`). It powers the
+    /// hallucination check; when unset that check is skipped.
+    laya_configured: bool,
+    laya_url: Option<String>,
+    laya_timeout_ms: u64,
     /// Version of the calibration fit behind the fusion, or `null` when no fit exists —
     /// in which case the decision engine uses its pre-fusion aggregator.
     calibration_version: Option<i32>,
@@ -1177,7 +1164,7 @@ async fn get_system_config(
             .await.unwrap_or_default()
     } else { String::new() };
 
-    let (judge_mode, judge_url) = judge_configuration();
+    let laya_url = std::env::var("LAYA_URL").ok().filter(|url| !url.trim().is_empty());
     let (calibration_version, calibrated_detectors) = calibration_state(state.pool.as_ref()).await;
 
     Json(SystemConfig {
@@ -1196,38 +1183,16 @@ async fn get_system_config(
         database_connected: db_connected,
         database_engine: db_version,
         database_name: db_name,
-        decision_judge: judge_mode.clone(),
-        decision_judge_configured: match judge_mode.as_str() {
-            "laya" | "jev" => judge_url.is_some(),
-            _ => false,
-        },
-        decision_judge_url: judge_url,
-        decision_judge_timeout_ms: std::env::var("LAYA_TIMEOUT_MS")
+        laya_configured: laya_url.is_some(),
+        laya_url,
+        laya_timeout_ms: std::env::var("LAYA_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(5000),
+            .unwrap_or(10_000),
         calibration_version,
         calibrated_detectors,
         fusion_enabled: calibrated_detectors > 0,
     })
-}
-
-/// Read the decision-model judge configuration from the environment.
-fn judge_configuration() -> (String, Option<String>) {
-    let mode = std::env::var("DECISION_JUDGE")
-        .unwrap_or_else(|_| "off".to_string())
-        .trim()
-        .to_lowercase();
-
-    if !matches!(mode.as_str(), "laya" | "jev") {
-        return ("off".to_string(), None);
-    }
-
-    let url = std::env::var("LAYA_URL")
-        .ok()
-        .filter(|url| !url.trim().is_empty());
-
-    (mode, url)
 }
 
 /// Fitted calibration state: latest version and how many detectors it covers.

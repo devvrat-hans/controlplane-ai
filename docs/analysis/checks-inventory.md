@@ -1,3 +1,9 @@
+> **Update (2026-09-29):** DeepEval and the general Laya decision judge were removed.
+> Hallucination is now checked by **Laya** with a dedicated 3-question call
+> (`laya-hallucination` / `laya-groundedness`), only when the request carries grounding
+> context. The guardrails sidecar now runs PII, toxicity and bias only. Entries below
+> that describe `deepeval-hallucination` or the batched judge are historical.
+
 # ControlPlane.ai — Governance Check Inventory & Decision Flow
 
 > **What this document is:** for every governance check, *how* it is implemented, *which*
@@ -67,7 +73,7 @@ verdicts together uses it. So:
 | **14** | **Product checks** — the number to quote (6 fast + 8 shadow) | this doc, §3 |
 | **6** | Fast-path `check_name`s: `unsafe_content`, `secret_detection`, `cost_cap`, `retry_detection`, `tool_use_detection`, `session_risk_accumulator` | `fast-path/src/checks/*` |
 | **5** | Native shadow checks: `prompt_injection`, `groundedness`, `verbosity`, `semantic_pii`, `bias_classification` | `shadow-analysis/src/*` |
-| **3** | Active guardrails sidecar checks: `presidio-pii`, `llm-guard-toxicity`, `deepeval-hallucination` | `guardrails/main.py` |
+| **2** | Active guardrails sidecar checks: `presidio-pii`, `llm-guard-toxicity` (hallucination moved to Laya) | `guardrails/main.py` |
 | **+2** | Input-side re-scans (`input-toxicity`, `input-bias`) — the *same* engines as toxicity/bias, renamed | `shadow-analysis/src/worker.rs` |
 | **+1** | `fast-path-summary` — a **synthetic `Pass`** emitted 3× (one per axis) when no fast-path check fires, so the dashboard's axis breakdown is even | `proxy/src/handler.rs` |
 | **8** | **Opt-in** judge detectors `laya-*` (+ their `-evidence` variants) | `shadow-analysis/src/laya_client.rs` |
@@ -219,7 +225,7 @@ Python FastAPI service (`services/guardrails/main.py`, `:8200`), called over HTT
 |---|---|---|---|---|
 | 12 | `presidio-pii` | **Microsoft Presidio** + spaCy NER, 12 sensitive entity types @ score ≥ 0.7 | entities ≥ 3 → **Escalate**, else **Edit** | max entity score |
 | 13 | `llm-guard-toxicity` | **HuggingFace** `unitary/unbiased-toxic-roberta` | score > 0.9 → **Block**, > 0.7 → **Escalate**, else **Edit** | score |
-| 14 | `deepeval-hallucination` | **DeepEval** (needs a judge) **→ word-overlap fallback** | score > 0.8 → **Escalate**, else **Edit**; **no context ⇒ skip** | score |
+| 14 | ~~`deepeval-hallucination`~~ | **Removed** — replaced by `laya-hallucination` (Laya, 3-question call; **no context ⇒ skip**) | see the Laya table | — |
 
 > The `llm-guard-*` names come from a log line, but **no `llm-guard` dependency exists** —
 > these are raw `transformers` pipelines. The models are real; the label is wrong.
@@ -445,13 +451,13 @@ Client ──▶ Proxy (:8900)
                     └── guardrails sidecar (Python, :8200)
                          12 presidio-pii            [Presidio + spaCy] → Escalate / Edit
                          13 llm-guard-toxicity      [toxic-roberta]     → Block / Escalate / Edit
-                         14 deepeval-hallucination  [DeepEval → fallback] → Escalate / Edit
 
      input-side re-scans:  input-toxicity, input-bias
 
-OPTIONAL — only when DECISION_JUDGE=laya|jev (one batched HTTP call, max 8 windows):
-                    └── laya judge (:8300)
+HALLUCINATION — Laya (:8300), only when the request has grounding context:
+                    └── laya (3 questions per call)
                          15 laya-hallucination   16 laya-groundedness
+REMOVED — the batched decision judge that also produced:
                          17 laya-prompt-injection 18 laya-tool-use
                          19 laya-bias            20 laya-toxicity
                          21 laya-semantic-pii    22 laya-verbosity
@@ -482,15 +488,15 @@ OPTIONAL — only when DECISION_JUDGE=laya|jev (one batched HTTP call, max 8 win
 > it **fails open** in under 50 ms. The **shadow path** holds eight more: five native
 > heuristics (prompt injection, groundedness, verbosity, semantic PII, bias) plus a Python
 > guardrails sidecar using **real models** — Microsoft Presidio with spaCy for PII,
-> HuggingFace toxic-roberta for toxicity, and DeepEval for hallucination. Shadow verdicts
+> HuggingFace toxic-roberta for toxicity; hallucination is scored by Laya. Shadow verdicts
 > can **never** alter delivery; they are evidence. A **deterministic aggregator** folds the
 > evidence into one outcome (worst-of, compound-risk escalation, optional calibrated
 > fusion with a corroboration rule and judge-vs-heuristic disagreement routing), and that
 > outcome drives human escalation, the append-only audit chain, cost, and alerts. **Three
 > of the shadow checks are heuristics standing in for the model the architecture targets**
-> (groundedness → NLI, semantic PII → NER, bias → ONNX), hallucination's LLM judge is not
-> configured locally so it falls back to word overlap, and the opt-in Laya/Jev judge adds
-> eight calibrated detectors — all of which are documented upgrade paths, not surprises.
+> (groundedness → NLI, semantic PII → NER, bias → ONNX), and hallucination is answered by
+> the Laya decision model (uncalibrated until a fit exists) — documented upgrade paths,
+> not surprises.
 >
 > **One caveat to state up front:** the fast-path actions (block / redact / pass) are live
 > end-to-end today. The **shadow-derived final outcome, its alerts, and per-call costing

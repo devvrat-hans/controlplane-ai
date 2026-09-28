@@ -188,7 +188,6 @@ async fn main() -> Result<()> {
         shadow_worker.run(shadow_shutdown).await;
     });
     info!(
-        judge = %std::env::var("DECISION_JUDGE").unwrap_or_else(|_| "off".to_string()),
         laya_url = %std::env::var("LAYA_URL").unwrap_or_else(|_| "(unset)".to_string()),
         "Shadow analysis worker started"
     );

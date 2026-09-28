@@ -265,8 +265,8 @@ curl -s -X POST localhost:8090/mcp \
 
 ## 8. The opt-in scanner adapter
 
-PII redaction, toxicity, bias and hallucination scanning only exist **inside**
-the pipeline (fast-path regex; Presidio / transformers / DeepEval in the
+PII redaction, toxicity and bias scanning only exist **inside**
+the pipeline (fast-path regex; Presidio / transformers in the
 internal guardrails sidecar). There is no public endpoint for a one-off scan.
 
 `scan_content` is therefore a **curated, gated adapter**: it is disabled unless
@@ -352,5 +352,5 @@ is unaffected. If a change is at fault, re-deploy the previous binary.
 
 ---
 
-See `AGENTS.md` for the service contract and `docs/analysis/checks-inventory.md`
-for the governance checks this surface reports on.
+See the root `README.md` for the service architecture and
+`docs/analysis/checks-inventory.md` for the governance checks this surface reports on.

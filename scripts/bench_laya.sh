@@ -47,13 +47,10 @@ echo "Results dir: $OUT"
 
 API_URL="${CONTROLPLANE_API_URL:-http://localhost:8080}"
 
-# Reports whether a judge-enabled gateway is actually reachable. Enabling the judge
-# takes THREE things, and the sidecar container being up is only the first:
-#   1. the `judge` compose profile started (the Laya container itself)
-#   2. the GATEWAY (re)started with DECISION_JUDGE=laya|jev and LAYA_URL set --
-#      both are read from the process environment at startup, so an already-running
-#      gateway keeps reporting "off" until it is recreated
-#   3. a policy that does not set checks.decision_judge_enabled = false (defaults ON)
+# Reports whether the gateway has Laya configured. Laya answers the hallucination
+# check whenever the gateway was started with LAYA_URL set (docker compose sets it) and
+# the app's Hallucination Detection toggle is on. (The old batched decision judge and
+# its DECISION_JUDGE switch were removed.)
 # This block never fails the run; it just tells the truth before any number is quoted.
 echo "════ 0/6  Judge readiness preflight ════"
 {
@@ -63,8 +60,8 @@ echo "════ 0/6  Judge readiness preflight ════"
   if [ -z "$CFG" ]; then
     echo "gateway config: UNREACHABLE — cannot confirm judge state"
   else
-    echo "decision_judge:            $(printf '%s' "$CFG" | sed -n 's/.*"decision_judge":"\([^"]*\)".*/\1/p')"
-    echo "decision_judge_configured: $(printf '%s' "$CFG" | sed -n 's/.*"decision_judge_configured":\([a-z]*\).*/\1/p')"
+    echo "laya_configured:           $(printf '%s' "$CFG" | sed -n 's/.*"laya_configured":\([a-z]*\).*/\1/p')"
+    echo "laya_url:                  $(printf '%s' "$CFG" | sed -n 's/.*"laya_url":"\([^"]*\)".*/\1/p')"
     echo "fusion_enabled:            $(printf '%s' "$CFG" | sed -n 's/.*"fusion_enabled":\([a-z]*\).*/\1/p')"
     echo "calibrated_detectors:      $(printf '%s' "$CFG" | sed -n 's/.*"calibrated_detectors":\([0-9]*\).*/\1/p')"
   fi
@@ -107,7 +104,7 @@ echo "════ 1/6  Environment manifest ════"
   echo "workspace_version: $(grep -m1 '^version' Cargo.toml | sed 's/.*= *//')"
   echo
   echo "## Judge configuration in the observed corpus"
-  echo "DECISION_JUDGE (local DB corpus): see judge_verdicts below"
+  echo "Laya verdicts in the local DB corpus: see judge_verdicts below"
 } | tee "$OUT/00-manifest.txt"
 
 echo

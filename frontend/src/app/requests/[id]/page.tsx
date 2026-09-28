@@ -37,7 +37,9 @@ const CHECK_NAME_ALIASES: Record<string, string> = {
   session_risk_accumulator: "session_risk",
   "presidio-pii": "pii",
   "llm-guard-toxicity": "toxicity",
-  "deepeval-hallucination": "hallucination",
+  // The hallucination check is answered by Laya; its evidence-only reading is shown
+  // in the Laya panel, the actionable verdict on the hallucination row.
+  "laya-hallucination": "hallucination",
   "input-toxicity": "input_toxicity",
   "input-bias": "input_bias",
 };
@@ -177,7 +179,7 @@ export default function RequestDetailPage() {
       .then((cfg) => {
         if (!cfg) return;
         setJudgeStatus({
-          mode: (cfg.decision_judge as string) ?? "off",
+          mode: cfg.laya_configured ? "laya" : "off",
           calibrationVersion: (cfg.calibration_version as number | null) ?? null,
           fusionEnabled: Boolean(cfg.fusion_enabled),
         });
@@ -598,10 +600,9 @@ const ALL_CHECKS = [
   { name: "semantic_pii", axis: "responsibility", path: "shadow", description: "Re-identification risk (quasi-identifiers)" },
   { name: "pii", axis: "responsibility", path: "shadow", description: "Presidio NER-based PII detection" },
   { name: "toxicity", axis: "responsibility", path: "shadow", description: "Toxic content classification" },
-  { name: "hallucination", axis: "performance", path: "shadow", description: "DeepEval LLM-as-a-judge" },
+  { name: "hallucination", axis: "performance", path: "shadow", description: "Laya — vs context if given, else vs the question" },
   { name: "input_toxicity", axis: "responsibility", path: "shadow", description: "Toxicity scan of the prompt (LLM Guard)" },
   { name: "input_bias", axis: "responsibility", path: "shadow", description: "Bias scan of the prompt (LLM Guard)" },
-  { name: "decision_judge", axis: "responsibility", path: "shadow", description: "Laya/Jev decision-model judge (optional)" },
 ];
 
 function LifecycleTimeline({
@@ -721,7 +722,7 @@ function PolicyCheckTable({ verdicts, call }: { verdicts: VerdictDetail[]; call:
   });
 
   // Also include any verdicts with check names not in our static list (e.g. individual
-  // decision-judge findings). The proxy's per-axis "fast-path-summary" pass markers are
+  // Laya findings). The proxy's per-axis "fast-path-summary" pass markers are
   // skipped: every fast check already has its own row, and the total is in the footer.
   for (const v of verdicts) {
     const name = CHECK_NAME_ALIASES[v.check_name] ?? v.check_name;
@@ -953,7 +954,7 @@ function JudgePanel({
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium">Judge Panel</CardTitle>
+        <CardTitle className="text-sm font-medium">Laya Readings (hallucination)</CardTitle>
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-[10px] font-mono">
             {status?.mode && status.mode !== "off" ? status.mode : "laya"}
@@ -975,8 +976,8 @@ function JudgePanel({
       <CardContent className="space-y-4">
         {!status || status.mode === "off" ? (
           <p className="text-[11px] text-muted-foreground/70">
-            These readings were recorded with <code>DECISION_JUDGE</code> enabled; it is not set on
-            the currently running server.
+            These readings were recorded while Laya was configured; <code>LAYA_URL</code> is not set
+            on the currently running server.
           </p>
         ) : null}
 
@@ -991,7 +992,7 @@ function JudgePanel({
         {/* Judge vs heuristic, per axis */}
         <div className="space-y-2">
           <p className="text-[11px] font-medium text-muted-foreground/70">
-            Judge probability vs the strongest heuristic on the same axis
+            Laya probability vs the strongest heuristic on the same axis
           </p>
           {perAxis.map((row) => (
             <div key={row.axis} className="flex items-center gap-3 text-xs">

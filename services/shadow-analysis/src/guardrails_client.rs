@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use controlplane_common::types::{Axis, Outcome};
-use crate::types::ShadowVerdict;
+use crate::types::{ShadowVerdict, DEFAULT_SHADOW_TIMEOUT_MS};
 
 #[derive(Serialize)]
 struct ScanRequest {
@@ -48,14 +48,6 @@ struct BiasResponse {
     duration_ms: f64,
 }
 
-#[derive(Deserialize)]
-struct HallucinationResponse {
-    is_hallucinated: bool,
-    score: f64,
-    reason: String,
-    duration_ms: f64,
-}
-
 /// `Ok(Some)` = finding, `Ok(None)` = scanned and clean, `Err` = the scan did not
 /// happen (sidecar unreachable / error status / unreadable body). Callers fail open
 /// on `Err`, but can now report it instead of mistaking an outage for a pass.
@@ -67,11 +59,17 @@ pub struct GuardrailsClient {
 }
 
 impl GuardrailsClient {
+    /// Client with the default timeout ([`DEFAULT_SHADOW_TIMEOUT_MS`]).
     pub fn new(base_url: &str) -> Self {
+        Self::with_timeout_ms(base_url, DEFAULT_SHADOW_TIMEOUT_MS)
+    }
+
+    /// Client whose scans give up after `timeout_ms` (reported as an error, fail open).
+    pub fn with_timeout_ms(base_url: &str, timeout_ms: u64) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_millis(timeout_ms.max(1)))
                 .build()
                 .unwrap_or_default(),
         }
@@ -249,63 +247,6 @@ impl GuardrailsClient {
             }
             Err(e) => {
                 warn!(error = %e, "Failed to reach guardrails bias endpoint");
-                Err("guardrails sidecar unreachable".to_string())
-            }
-        }
-    }
-
-    pub async fn scan_hallucination(&self, text: &str, context: Option<&str>) -> ScanResult {
-        let url = format!("{}/scan/hallucination", self.base_url);
-        let body = ScanRequest {
-            text: text.to_string(),
-            prompt: context.map(|s| s.to_string()),
-        };
-
-        match self.http.post(&url).json(&body).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<HallucinationResponse>().await {
-                    Ok(result) => {
-                        debug!(
-                            is_hallucinated = result.is_hallucinated,
-                            score = result.score,
-                            reason = %result.reason,
-                            duration_ms = result.duration_ms,
-                            "DeepEval hallucination check complete"
-                        );
-                        if result.is_hallucinated {
-                            let outcome = if result.score > 0.8 {
-                                Outcome::Escalate
-                            } else {
-                                Outcome::Edit
-                            };
-
-                            Ok(Some(ShadowVerdict {
-                                axis: Axis::Performance,
-                                check_name: "deepeval-hallucination".to_string(),
-                                outcome,
-                                confidence: result.score as f32,
-                                reason: format!(
-                                    "Hallucination detected: {} (score: {:.2})",
-                                    result.reason, result.score
-                                ),
-                                duration_ms: result.duration_ms,
-                            }))
-                        } else {
-                            Ok(None)
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to parse hallucination response");
-                        Err("guardrails sidecar returned an unreadable response".to_string())
-                    }
-                }
-            }
-            Ok(resp) => {
-                warn!(status = %resp.status(), "Guardrails hallucination endpoint returned error");
-                Err(format!("guardrails sidecar returned HTTP {}", resp.status().as_u16()))
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to reach guardrails hallucination endpoint");
                 Err("guardrails sidecar unreachable".to_string())
             }
         }

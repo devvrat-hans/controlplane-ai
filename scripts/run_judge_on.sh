@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # ControlPlane.ai — run ONE judge-enabled measurement pass, self-contained.
 #
+# OBSOLETE (2026-09-29): the batched decision judge and its DECISION_JUDGE switch were
+# removed — the gateway ignores DECISION_JUDGE, and Laya now only answers the
+# hallucination check (whenever LAYA_URL is set). Kept so the numbers in
+# docs/analysis/laya-benchmark-report.md stay reproducible against that older commit;
+# do not use it to measure the current pipeline.
+#
 # Needed because a judge-on measurement requires the Laya sidecar and the Rust
 # gateway to be alive simultaneously while traffic is driven, and background
 # processes here do not survive between tool invocations. Everything happens

@@ -47,7 +47,6 @@ const ALL_ENABLED_POLICY = {
         groundedness_enabled: true,
         verbosity_enabled: true,
         semantic_pii_enabled: true,
-        decision_judge_enabled: true,
       },
       is_active: true,
     },
@@ -74,7 +73,6 @@ const ALL_DISABLED_POLICY = {
         groundedness_enabled: false,
         verbosity_enabled: false,
         semantic_pii_enabled: false,
-        decision_judge_enabled: false,
       },
       is_active: true,
     },
@@ -99,7 +97,6 @@ const MIXED_POLICY = {
         groundedness_enabled: false,
         verbosity_enabled: true,
         semantic_pii_enabled: false,
-        decision_judge_enabled: false,
       },
       is_active: true,
     },
@@ -140,14 +137,13 @@ const ALL_TOGGLE_LABELS = [
   { label: "PII Detection (Presidio)", ariaLabel: "PII Detection (Presidio) toggle", key: "pii_detection" },
   { label: "Toxicity Detection", ariaLabel: "Toxicity Detection toggle", key: "toxicity_detection" },
   { label: "Bias Detection", ariaLabel: "Bias Detection toggle", key: "bias_detection" },
-  { label: "Decision-Model Judge", ariaLabel: "Decision-Model Judge toggle", key: "decision_judge_enabled" },
 ];
 
 const FAST_PATH_LABELS = ALL_TOGGLE_LABELS.filter((t) =>
   ["unsafe_content_enabled", "secret_detection_enabled"].includes(t.key)
 );
 const SHADOW_PATH_LABELS = ALL_TOGGLE_LABELS.filter((t) =>
-  ["prompt_injection_enabled", "hallucination_detection_enabled", "groundedness_enabled", "verbosity_enabled", "semantic_pii_enabled", "decision_judge_enabled"].includes(t.key)
+  ["prompt_injection_enabled", "hallucination_detection_enabled", "groundedness_enabled", "verbosity_enabled", "semantic_pii_enabled"].includes(t.key)
 );
 const GUARDRAILS_LABELS = ALL_TOGGLE_LABELS.filter((t) =>
   ["pii_detection", "toxicity_detection", "bias_detection"].includes(t.key)
@@ -184,7 +180,7 @@ function getToggleByLabel(label: string): HTMLElement {
 
 /** Wait until the enabled-count badge reflects the expected count. This
  *  ensures the async policy fetch has completed before we assert toggle states. */
-async function waitForCount(expectedCount: number, total = 11) {
+async function waitForCount(expectedCount: number, total = 10) {
   await waitFor(() => {
     expect(screen.getByText(`${expectedCount}/${total} checks enabled`)).toBeInTheDocument();
   });
@@ -234,27 +230,13 @@ describe("Policies Page — Toggle Switches", () => {
       renderAsAdmin();
     });
 
-    it("renders exactly 11 toggle switches", async () => {
-      await waitForCount(11);
-      expect(getToggleSwitches()).toHaveLength(11);
-    });
-
-    it("renders the decision-model judge as the 11th toggle, labelled honestly", async () => {
-      await waitForCount(11);
-
-      // The badge must say which engine actually runs, and the description must say the
-      // judge is server-gated rather than implying it is on because the switch is on.
-      expect(screen.getByText("Laya / Jev")).toBeInTheDocument();
-      expect(
-        screen.getByText(/Requires DECISION_JUDGE=laya\|jev/)
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(/it scores, it never decides/i)
-      ).toBeInTheDocument();
+    it("renders exactly 10 toggle switches", async () => {
+      await waitForCount(10);
+      expect(getToggleSwitches()).toHaveLength(10);
     });
 
     it("renders all fast-path toggle labels", async () => {
-      await waitForCount(11);
+      await waitForCount(10);
       expect(screen.getByText(/Fast-Path Checks/)).toBeInTheDocument();
       for (const { label } of FAST_PATH_LABELS) {
         expect(screen.getByText(label)).toBeInTheDocument();
@@ -262,7 +244,7 @@ describe("Policies Page — Toggle Switches", () => {
     });
 
     it("renders all shadow-path toggle labels", async () => {
-      await waitForCount(11);
+      await waitForCount(10);
       expect(screen.getByText(/Shadow-Path Checks/)).toBeInTheDocument();
       for (const { label } of SHADOW_PATH_LABELS) {
         expect(screen.getByText(label)).toBeInTheDocument();
@@ -270,7 +252,7 @@ describe("Policies Page — Toggle Switches", () => {
     });
 
     it("renders all guardrails sidecar toggle labels", async () => {
-      await waitForCount(11);
+      await waitForCount(10);
       expect(screen.getByText(/Guardrails Sidecar/)).toBeInTheDocument();
       for (const { label } of GUARDRAILS_LABELS) {
         expect(screen.getByText(label)).toBeInTheDocument();
@@ -278,18 +260,18 @@ describe("Policies Page — Toggle Switches", () => {
     });
 
     it("renders each toggle with a matching aria-label", async () => {
-      await waitForCount(11);
+      await waitForCount(10);
       for (const { ariaLabel } of ALL_TOGGLE_LABELS) {
         expect(screen.getByRole("switch", { name: ariaLabel })).toBeInTheDocument();
       }
     });
 
     it("renders provider badges (Fast-Path Engine, Pure Rust, etc.)", async () => {
-      await waitForCount(11);
+      await waitForCount(10);
       // Fast-Path Engine appears for Unsafe Content Detection + Secret Detection
       expect(screen.getAllByText("Fast-Path Engine").length).toBe(2);
       expect(screen.getByText("Pure Rust")).toBeInTheDocument();
-      expect(screen.getByText("DeepEval")).toBeInTheDocument();
+      expect(screen.getByText("Laya")).toBeInTheDocument();
       expect(screen.getByText("NLI Model")).toBeInTheDocument();
       expect(screen.getByText("Shadow Analysis")).toBeInTheDocument();
       expect(screen.getByText("NER Model")).toBeInTheDocument();
@@ -308,7 +290,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       for (const s of getToggleSwitches()) {
         expect(s).toHaveAttribute("aria-checked", "true");
       }
@@ -328,7 +310,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(MIXED_POLICY);
       renderAsAdmin();
 
-      // MIXED_POLICY has 5 enabled, 6 disabled
+      // MIXED_POLICY has 5 enabled, 5 disabled
       await waitForCount(5);
 
       expect(getToggleByLabel("PII Detection (Presidio)")).toHaveAttribute("aria-checked", "true");
@@ -341,7 +323,6 @@ describe("Policies Page — Toggle Switches", () => {
       expect(getToggleByLabel("Groundedness Scoring")).toHaveAttribute("aria-checked", "false");
       expect(getToggleByLabel("Verbosity Detection")).toHaveAttribute("aria-checked", "true");
       expect(getToggleByLabel("Semantic PII Detection")).toHaveAttribute("aria-checked", "false");
-      expect(getToggleByLabel("Decision-Model Judge")).toHaveAttribute("aria-checked", "false");
     });
   });
 
@@ -354,7 +335,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       const toggle = getToggleByLabel("Unsafe Content Detection");
       expect(toggle).toHaveAttribute("aria-checked", "true");
 
@@ -378,7 +359,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       const toggle = getToggleByLabel("Prompt Injection Detection");
 
       fireEvent.click(toggle);
@@ -392,22 +373,22 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       fireEvent.click(getToggleByLabel("Secret Detection"));
       expect(getToggleByLabel("Secret Detection")).toHaveAttribute("aria-checked", "false");
 
-      // All other 10 should still be true
+      // All other 9 should still be true
       for (const { label } of ALL_TOGGLE_LABELS) {
         if (label === "Secret Detection") continue;
         expect(getToggleByLabel(label)).toHaveAttribute("aria-checked", "true");
       }
     });
 
-    it("toggling all 11 switches off results in all aria-checked=false", async () => {
+    it("toggling all 10 switches off results in all aria-checked=false", async () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       for (const { label } of ALL_TOGGLE_LABELS) {
         fireEvent.click(getToggleByLabel(label));
       }
@@ -421,7 +402,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
 
       fireEvent.click(getToggleByLabel("Unsafe Content Detection"));
       fireEvent.click(getToggleByLabel("Toxicity Detection"));
@@ -446,13 +427,13 @@ describe("Policies Page — Toggle Switches", () => {
   // ───────────────────────────────────────────────────────────────
 
   describe("Enabled count badge", () => {
-    it("shows 11/11 when all toggles are enabled", async () => {
+    it("shows 10/10 when all toggles are enabled", async () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
-      await waitForCount(11);
+      await waitForCount(10);
     });
 
-    it("shows 0/11 when all toggles are disabled", async () => {
+    it("shows 0/10 when all toggles are disabled", async () => {
       mockAppsAndPolicy(ALL_DISABLED_POLICY);
       renderAsAdmin();
       await waitForCount(0);
@@ -462,25 +443,25 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       fireEvent.click(getToggleByLabel("Bias Detection"));
-      expect(screen.getByText("10/11 checks enabled")).toBeInTheDocument();
+      expect(screen.getByText("9/10 checks enabled")).toBeInTheDocument();
     });
 
     it("decrements count with each disable click", async () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
 
       fireEvent.click(getToggleByLabel("Bias Detection"));
-      expect(screen.getByText("10/11 checks enabled")).toBeInTheDocument();
+      expect(screen.getByText("9/10 checks enabled")).toBeInTheDocument();
 
       fireEvent.click(getToggleByLabel("Toxicity Detection"));
-      expect(screen.getByText("9/11 checks enabled")).toBeInTheDocument();
+      expect(screen.getByText("8/10 checks enabled")).toBeInTheDocument();
 
       fireEvent.click(getToggleByLabel("PII Detection (Presidio)"));
-      expect(screen.getByText("8/11 checks enabled")).toBeInTheDocument();
+      expect(screen.getByText("7/10 checks enabled")).toBeInTheDocument();
     });
 
     it("increments count when a disabled toggle is re-enabled", async () => {
@@ -490,7 +471,7 @@ describe("Policies Page — Toggle Switches", () => {
       await waitForCount(5);
 
       fireEvent.click(getToggleByLabel("Toxicity Detection"));
-      expect(screen.getByText("6/11 checks enabled")).toBeInTheDocument();
+      expect(screen.getByText("6/10 checks enabled")).toBeInTheDocument();
     });
   });
 
@@ -503,7 +484,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsViewer();
 
-      await waitForCount(11);
+      await waitForCount(10);
       for (const s of getToggleSwitches()) {
         expect(s).toBeDisabled();
       }
@@ -513,7 +494,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsViewer();
 
-      await waitForCount(11);
+      await waitForCount(10);
       const toggle = getToggleByLabel("Bias Detection");
       fireEvent.click(toggle);
       expect(toggle).toHaveAttribute("aria-checked", "true");
@@ -523,16 +504,16 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsViewer();
 
-      await waitForCount(11);
+      await waitForCount(10);
       fireEvent.click(getToggleByLabel("Unsafe Content Detection"));
-      expect(screen.getByText("11/11 checks enabled")).toBeInTheDocument();
+      expect(screen.getByText("10/10 checks enabled")).toBeInTheDocument();
     });
 
     it("viewer sees read-only message instead of save button", async () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsViewer();
 
-      await waitForCount(11);
+      await waitForCount(10);
       expect(screen.getByText(/Read-only/i)).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /Save Policy/i })).toBeNull();
     });
@@ -547,7 +528,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
 
       fireEvent.click(getToggleByLabel("Toxicity Detection"));
       fireEvent.click(getToggleByLabel("Verbosity Detection"));
@@ -574,25 +555,8 @@ describe("Policies Page — Toggle Switches", () => {
         expect(body.hallucination_detection_enabled).toBe(true);
         expect(body.groundedness_enabled).toBe(true);
         expect(body.semantic_pii_enabled).toBe(true);
-        expect(body.decision_judge_enabled).toBe(true);
-      });
-    });
-
-    it("PUT request opts an app out of the judge when its toggle is switched off", async () => {
-      mockAppsAndPolicy(ALL_ENABLED_POLICY);
-      renderAsAdmin();
-
-      await waitForCount(11);
-      fireEvent.click(getToggleByLabel("Decision-Model Judge"));
-      fireEvent.click(screen.getByRole("button", { name: /Save Policy/i }));
-
-      await waitFor(() => {
-        const putCalls = mockFetch.mock.calls.filter(
-          (call: [string, RequestInit]) => call[1]?.method === "PUT"
-        );
-        expect(putCalls.length).toBeGreaterThan(0);
-        const body = JSON.parse(putCalls[0][1]?.body as string);
-        expect(body.decision_judge_enabled).toBe(false);
+        // The decision judge was removed; its key is no longer sent.
+        expect(body).not.toHaveProperty("decision_judge_enabled");
       });
     });
 
@@ -600,7 +564,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       fireEvent.click(screen.getByRole("button", { name: /Save Policy/i }));
 
       await waitFor(() => {
@@ -615,7 +579,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       fireEvent.click(screen.getByRole("button", { name: /Save Policy/i }));
 
       await waitFor(() => {
@@ -642,7 +606,7 @@ describe("Policies Page — Toggle Switches", () => {
       renderAsAdmin();
 
       // Initially all enabled (app 1)
-      await waitForCount(11);
+      await waitForCount(10);
 
       // Switch to app 2 (all disabled)
       const selects = screen.getAllByRole("combobox");
@@ -652,7 +616,7 @@ describe("Policies Page — Toggle Switches", () => {
       });
       fireEvent.change(appSelect!, { target: { value: "10000000-0000-0000-0000-000000000002" } });
 
-      // Now should show 0/11
+      // Now should show 0/10
       await waitForCount(0);
     });
   });
@@ -665,13 +629,13 @@ describe("Policies Page — Toggle Switches", () => {
     it("falls back to defaults when API returns empty policies", async () => {
       mockAppsAndPolicy(EMPTY_POLICY);
       renderAsAdmin();
-      await waitForCount(11); // defaults are all enabled
+      await waitForCount(10); // defaults are all enabled
     });
 
     it("falls back to defaults when config is null", async () => {
       mockAppsAndPolicy(NO_CONFIG_POLICY);
       renderAsAdmin();
-      await waitForCount(11);
+      await waitForCount(10);
     });
 
     it("uses defaults for missing fields in partial config", async () => {
@@ -683,7 +647,7 @@ describe("Policies Page — Toggle Switches", () => {
         expect(screen.getByText("0.80")).toBeInTheDocument();
       });
       // All toggle fields missing -> defaults (all true)
-      expect(screen.getByText("11/11 checks enabled")).toBeInTheDocument();
+      expect(screen.getByText("10/10 checks enabled")).toBeInTheDocument();
     });
     it("falls back to defaults when API fetch fails", async () => {
       mockFetch.mockImplementation((url: string) => {
@@ -694,7 +658,7 @@ describe("Policies Page — Toggle Switches", () => {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
       });
       renderAsAdmin();
-      await waitForCount(11);
+      await waitForCount(10);
     });
 
     it("falls back to defaults when policy response is not ok", async () => {
@@ -706,7 +670,7 @@ describe("Policies Page — Toggle Switches", () => {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
       });
       renderAsAdmin();
-      await waitForCount(11);
+      await waitForCount(10);
     });
   });
 
@@ -719,7 +683,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       const toggle = getToggleByLabel("Bias Detection");
       expect(toggle.className).toContain("bg-emerald-500");
     });
@@ -740,7 +704,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       const labelEl = screen.getByText("Bias Detection");
       const row = labelEl.closest('[class*="rounded-xl"]') as HTMLElement;
       expect(row.className).toContain("border-emerald-500/25");
@@ -760,7 +724,7 @@ describe("Policies Page — Toggle Switches", () => {
       mockAppsAndPolicy(ALL_ENABLED_POLICY);
       renderAsAdmin();
 
-      await waitForCount(11);
+      await waitForCount(10);
       const badges = screen.getAllByText("Fast-Path Engine");
       badges.forEach((badge) => {
         const badgeEl = badge.closest('[class*="rounded"]') as HTMLElement;

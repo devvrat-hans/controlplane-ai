@@ -7,8 +7,9 @@ Each endpoint accepts text and returns structured scan results.
 
 import logging
 import os
-import re
+import threading
 import time
+from contextlib import asynccontextmanager
 from typing import List, Optional
 
 from fastapi import FastAPI
@@ -17,9 +18,15 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("guardrails")
 
-app = FastAPI(title="ControlPlane Guardrails", version="0.7.0")
-
-# ─── Lazy-loaded engines (heavy imports deferred to first call) ───────────────
+# ─── Model engines: loaded once, under a lock ─────────────────────────────────
+#
+# Endpoints are sync, so FastAPI runs them on a thread pool. The shadow worker fires
+# PII + toxicity + input-toxicity + input-bias scans concurrently, so without a lock
+# every thread that arrived before the first load finished built its OWN spaCy/Presidio
+# analyzer and transformer pipelines. After a restart that burst grew the process to
+# ~6 GB and the kernel OOM-killed it (exit 137). One lock + an eager load at startup
+# guarantees exactly one copy of each model.
+_model_lock = threading.Lock()
 
 _presidio_analyzer = None
 _presidio_anonymizer = None
@@ -33,54 +40,91 @@ BIAS_THRESHOLD = float(os.environ.get("BIAS_THRESHOLD", "0.66"))
 def get_presidio_analyzer():
     global _presidio_analyzer
     if _presidio_analyzer is None:
-        from presidio_analyzer import AnalyzerEngine
-        _presidio_analyzer = AnalyzerEngine()
-        logger.info("Presidio AnalyzerEngine initialized")
+        with _model_lock:
+            if _presidio_analyzer is None:
+                from presidio_analyzer import AnalyzerEngine
+                _presidio_analyzer = AnalyzerEngine()
+                logger.info("Presidio AnalyzerEngine initialized")
     return _presidio_analyzer
 
 
 def get_presidio_anonymizer():
     global _presidio_anonymizer
     if _presidio_anonymizer is None:
-        from presidio_anonymizer import AnonymizerEngine
-        _presidio_anonymizer = AnonymizerEngine()
-        logger.info("Presidio AnonymizerEngine initialized")
+        with _model_lock:
+            if _presidio_anonymizer is None:
+                from presidio_anonymizer import AnonymizerEngine
+                _presidio_anonymizer = AnonymizerEngine()
+                logger.info("Presidio AnonymizerEngine initialized")
     return _presidio_anonymizer
 
 
 def get_toxicity_pipeline():
     global _toxicity_pipeline
     if _toxicity_pipeline is None:
-        try:
-            from transformers import pipeline
-            _toxicity_pipeline = pipeline(
-                "text-classification",
-                model="unitary/unbiased-toxic-roberta",
-                top_k=None,
-                truncation=True,
-                max_length=512,
-            )
-            logger.info("Toxicity pipeline initialized (unitary/unbiased-toxic-roberta)")
-        except Exception as e:
-            logger.warning(f"Failed to init Toxicity pipeline: {e}")
+        with _model_lock:
+            if _toxicity_pipeline is None:
+                _toxicity_pipeline = _load_toxicity_pipeline()
     return _toxicity_pipeline
+
+
+def _load_toxicity_pipeline():
+    try:
+        from transformers import pipeline
+        loaded = pipeline(
+            "text-classification",
+            model="unitary/unbiased-toxic-roberta",
+            top_k=None,
+            truncation=True,
+            max_length=512,
+        )
+        logger.info("Toxicity pipeline initialized (unitary/unbiased-toxic-roberta)")
+        return loaded
+    except Exception as e:
+        logger.warning(f"Failed to init Toxicity pipeline: {e}")
+        return None
 
 
 def get_bias_pipeline():
     global _bias_pipeline
     if _bias_pipeline is None:
-        try:
-            from transformers import pipeline
-            _bias_pipeline = pipeline(
-                "text-classification",
-                model="valurank/distilroberta-bias",
-                truncation=True,
-                max_length=512,
-            )
-            logger.info("Bias pipeline initialized (valurank/distilroberta-bias)")
-        except Exception as e:
-            logger.warning(f"Failed to init Bias pipeline: {e}")
+        with _model_lock:
+            if _bias_pipeline is None:
+                _bias_pipeline = _load_bias_pipeline()
     return _bias_pipeline
+
+
+def _load_bias_pipeline():
+    try:
+        from transformers import pipeline
+        loaded = pipeline(
+            "text-classification",
+            model="valurank/distilroberta-bias",
+            truncation=True,
+            max_length=512,
+        )
+        logger.info("Bias pipeline initialized (valurank/distilroberta-bias)")
+        return loaded
+    except Exception as e:
+        logger.warning(f"Failed to init Bias pipeline: {e}")
+        return None
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    # Load every model before the server accepts requests, so no request can race a
+    # load. Scans that arrive during startup get "connection refused" and the shadow
+    # worker records them as errors (fail open) instead of piling up here.
+    started = time.time()
+    get_presidio_analyzer()
+    get_presidio_anonymizer()
+    get_toxicity_pipeline()
+    get_bias_pipeline()
+    logger.info(f"All guardrails models loaded in {time.time() - started:.1f}s")
+    yield
+
+
+app = FastAPI(title="ControlPlane Guardrails", version="0.7.0", lifespan=lifespan)
 
 
 # ─── Request/Response Models ──────────────────────────────────────────────────
@@ -120,19 +164,11 @@ class BiasResponse(BaseModel):
     duration_ms: float
 
 
-class HallucinationResponse(BaseModel):
-    is_hallucinated: bool
-    score: float
-    reason: str
-    duration_ms: float
-
-
 class HealthResponse(BaseModel):
     status: str
     presidio: bool
     toxicity: bool
     bias: bool
-    deepeval: bool
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -140,18 +176,11 @@ class HealthResponse(BaseModel):
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    try:
-        import deepeval
-        deepeval_available = True
-    except ImportError:
-        deepeval_available = False
-
     return HealthResponse(
         status="ok",
         presidio=_presidio_analyzer is not None,
         toxicity=_toxicity_pipeline is not None,
         bias=_bias_pipeline is not None,
-        deepeval=deepeval_available,
     )
 
 
@@ -267,162 +296,6 @@ def scan_bias(req: ScanRequest):
         score=round(bias_score, 4),
         sanitized_text=req.text,
         duration_ms=round(duration_ms, 2),
-    )
-
-
-STOP_WORDS = {
-    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
-    'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'shall', 'can', 'to',
-    'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during',
-    'before', 'after', 'above', 'below', 'between', 'and', 'but', 'or', 'not', 'no', 'nor', 'so',
-    'yet', 'both', 'either', 'neither', 'each', 'every', 'all', 'any', 'few', 'more', 'most',
-    'other', 'some', 'such', 'than', 'too', 'very', 'just', 'about', 'also', 'it', 'its', 'this',
-    'that', 'these', 'those', 'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'him', 'his',
-    'she', 'her', 'they', 'them', 'their',
-}
-
-# DeepEval is an LLM-as-a-judge metric, so it is only as good as its judge model.
-# It is OPT-IN: used when OPENAI_API_KEY is set (DeepEval's default judge) or when
-# HALLUCINATION_JUDGE_MODEL names a local Ollama model. Measured on this stack, the
-# demo model qwen2.5:1.5b returned inverted verdicts and took 7-14 s per call on CPU
-# (over the shadow worker's 5 s sidecar timeout), so it is not used implicitly.
-# Without a judge, the deterministic fact-grounding check below is used.
-HALLUCINATION_THRESHOLD = float(os.environ.get("HALLUCINATION_THRESHOLD", "0.5"))
-HALLUCINATION_JUDGE_MODEL = os.environ.get("HALLUCINATION_JUDGE_MODEL", "").strip()
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
-
-
-def _hallucination_judge_configured() -> bool:
-    return bool(os.environ.get("OPENAI_API_KEY") or HALLUCINATION_JUDGE_MODEL)
-
-
-def _hallucination_judge():
-    """Judge model for DeepEval: None = DeepEval's default (OpenAI), else local Ollama."""
-    if os.environ.get("OPENAI_API_KEY"):
-        return None
-    from deepeval.models import OllamaModel
-
-    return OllamaModel(model=HALLUCINATION_JUDGE_MODEL, base_url=OLLAMA_BASE_URL, temperature=0)
-
-
-_FACT_TOKEN = re.compile(r"\b(?:\d[\d,.]*\d|\d|[A-Z][a-zA-Z'-]+)\b")
-
-
-def _key_facts(text: str) -> set:
-    """Names and numbers in `text` — the claims a grounded answer must not invent.
-
-    Capitalized words that merely open a sentence are ignored, as are stop words.
-    """
-    facts = set()
-    for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
-        for m in _FACT_TOKEN.finditer(sentence):
-            token = m.group(0).strip(".,").lower()
-            opens_sentence = m.start() == 0 and not token[0].isdigit()
-            if token and token not in STOP_WORDS and not opens_sentence:
-                facts.add(token)
-    return facts
-
-
-def grounding_check(response_text: str, context_text: str):
-    """Deterministic hallucination check: share of the answer's names/numbers that
-    do not appear anywhere in the grounding context. Returns (score, unsupported)."""
-    context_lower = context_text.lower()
-    context_words = set(re.findall(r"[a-z0-9][a-z0-9'-]*", context_lower))
-    facts = _key_facts(response_text)
-    if not facts:
-        return 0.0, []
-    unsupported = sorted(f for f in facts if f not in context_words and f not in context_lower)
-    return len(unsupported) / len(facts), unsupported
-
-
-@app.post("/scan/hallucination", response_model=HallucinationResponse)
-def scan_hallucination(req: ScanRequest):
-    """
-    Detect hallucinations using DeepEval's LLM-as-a-judge approach.
-    Falls back to a simple NLI heuristic if DeepEval is not installed.
-    
-    The prompt field should contain the context/grounding document.
-    The text field should contain the model's response to evaluate.
-    """
-    start = time.time()
-    response_text = req.text
-    context_text = req.prompt or ""
-
-    # DeepEval only when a real judge is configured (see HALLUCINATION_JUDGE_MODEL).
-    try:
-        if not _hallucination_judge_configured():
-            raise ImportError("no hallucination judge configured")
-        from deepeval import evaluate
-        from deepeval.metrics import HallucinationMetric
-        from deepeval.test_case import LLMTestCase
-
-        if not context_text:
-            # No context to compare against — can't assess hallucination
-            return HallucinationResponse(
-                is_hallucinated=False,
-                score=0.0,
-                reason="No context provided for hallucination check",
-                duration_ms=round((time.time() - start) * 1000, 2),
-            )
-
-        # HallucinationMetric reads `context` (not `retrieval_context`), and LLMTestCase
-        # requires `input`. Without both, every call failed validation and silently
-        # fell through to the heuristic below.
-        test_case = LLMTestCase(
-            input=context_text,
-            actual_output=response_text,
-            context=[context_text],
-        )
-
-        metric = HallucinationMetric(threshold=HALLUCINATION_THRESHOLD, model=_hallucination_judge(), async_mode=False)
-        metric.measure(test_case)
-
-        # HallucinationMetric's score is the fraction of context it found contradicted.
-        score = metric.score
-        is_hallucinated = score > HALLUCINATION_THRESHOLD
-        judge = "openai" if os.environ.get("OPENAI_API_KEY") else f"ollama:{HALLUCINATION_JUDGE_MODEL}"
-        reason = f"DeepEval hallucination score {score:.4f} ({judge}): {metric.reason or 'no reason given'}"
-
-        logger.info(f"DeepEval hallucination check: score={score:.4f}, hallucinated={is_hallucinated}")
-
-        return HallucinationResponse(
-            is_hallucinated=is_hallucinated,
-            score=round(score, 4),
-            reason=reason,
-            duration_ms=round((time.time() - start) * 1000, 2),
-        )
-
-    except ImportError:
-        logger.debug("DeepEval not installed, using heuristic hallucination check")
-    except Exception as e:
-        logger.warning(f"DeepEval hallucination check failed: {e}, using heuristic")
-
-    # Fallback: Simple heuristic hallucination detection
-    # Check if response contains claims that are unsupported by context
-    if not context_text:
-        return HallucinationResponse(
-            is_hallucinated=False,
-            score=0.0,
-            reason="No context — heuristic skip",
-            duration_ms=round((time.time() - start) * 1000, 2),
-        )
-
-    # Deterministic fact-grounding check: names and numbers in the answer that the
-    # context never mentions are treated as invented. (The previous word-overlap
-    # heuristic scored "built in 1720 by Napoleon" as 0.67 and still passed it.)
-    score, unsupported = grounding_check(response_text, context_text)
-    is_hallucinated = score >= HALLUCINATION_THRESHOLD
-    reason = (
-        f"Grounding check: {len(unsupported)} unsupported fact(s) {unsupported[:8]} (score {score:.4f})"
-        if unsupported
-        else "Grounding check: every name and number in the answer appears in the context"
-    )
-
-    return HallucinationResponse(
-        is_hallucinated=is_hallucinated,
-        score=round(score, 4),
-        reason=reason,
-        duration_ms=round((time.time() - start) * 1000, 2),
     )
 
 

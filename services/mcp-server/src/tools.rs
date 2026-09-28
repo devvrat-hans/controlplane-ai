@@ -52,7 +52,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         read_tool("get_system_config", "Sanitized system configuration (no credentials).", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("get_health", "ControlPlane API liveness.", json!({"type":"object","properties":{},"additionalProperties":false})),
         read_tool("get_ready", "ControlPlane API readiness and dependency status.", json!({"type":"object","properties":{},"additionalProperties":false})),
-        read_tool("scan_content", "Opt-in curated adapter: run PII, toxicity, bias or hallucination scanning via the internal guardrails sidecar. Disabled unless MCP_ENABLE_INTERNAL_SCANS=true.", json!({"type":"object","properties":{"kind":{"type":"string","enum":["pii","toxicity","bias","hallucination"]},"text":{"type":"string"},"context":{"type":"string","description":"Grounding context, for hallucination checks"}},"required":["kind","text"],"additionalProperties":false})),
+        read_tool("scan_content", "Opt-in curated adapter: run PII, toxicity or bias scanning via the internal guardrails sidecar. Disabled unless MCP_ENABLE_INTERNAL_SCANS=true.", json!({"type":"object","properties":{"kind":{"type":"string","enum":["pii","toxicity","bias"]},"text":{"type":"string"},"context":{"type":"string","description":"Optional prompt context passed to the scanner"}},"required":["kind","text"],"additionalProperties":false})),
         ToolDefinition {
             name: "evaluate_prompt".into(),
             description: "Send a prompt through the governance proxy and return the governed response plus the fast-path correlation id and latency. Incurs an upstream model call.".into(),
@@ -517,7 +517,7 @@ async fn scan_content(args: &Map<String, Value>, ctx: &ToolContext<'_>) -> Resul
         .as_deref()
         .ok_or_else(|| McpError::invalid_params("guardrails URL is not configured"))?;
 
-    let kind = req_enum(args, "kind", &["pii", "toxicity", "bias", "hallucination"])?;
+    let kind = req_enum(args, "kind", &["pii", "toxicity", "bias"])?;
     let text = req_str(args, "text")?;
     if text.len() > ctx.config.max_payload_bytes {
         return Err(McpError::payload_too_large(ctx.config.max_payload_bytes));
@@ -552,7 +552,7 @@ fn sanitize_system_config(raw: &Value) -> Value {
         "database_connected",
         "database_engine",
         "database_name",
-        "decision_judge",
+        "laya_configured",
         "calibration_version",
         "fusion_enabled",
     ];

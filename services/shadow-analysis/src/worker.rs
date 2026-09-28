@@ -215,7 +215,11 @@ async fn process_message(
         if !toggle_on {
             return Err(DISABLED_BY_POLICY.to_string());
         }
-        config.guardrails_url.as_deref().map(GuardrailsClient::new).ok_or_else(|| NO_SIDECAR.to_string())
+        config
+            .guardrails_url
+            .as_deref()
+            .map(|url| GuardrailsClient::with_timeout_ms(url, config.guardrails_timeout_ms))
+            .ok_or_else(|| NO_SIDECAR.to_string())
     };
 
     // Guardrails checks on the RESPONSE (Presidio PII + LLM Guard toxicity). Bias is
@@ -229,13 +233,6 @@ async fn process_message(
         let text = response_text.clone();
         let prompt = prompt_text.clone();
         spawn_timed(async move { client.scan_toxicity(&text, Some(&prompt)).await })
-    });
-
-    // DeepEval hallucination check (compares response against grounding context)
-    let hallucination: Launch<_> = sidecar(true, toggles.hallucination).and_then(|client| {
-        let context = context_text.clone().ok_or_else(|| "no grounding context in request".to_string())?;
-        let text = response_text.clone();
-        Ok(spawn_timed(async move { client.scan_hallucination(&text, Some(&context)).await }))
     });
 
     // Also scan the INPUT prompt for toxicity/bias (catches inappropriate prompts)
@@ -255,18 +252,11 @@ async fn process_message(
         Ok(spawn_timed(async move { client.scan_bias(&text, None).await }))
     });
 
-    // Decision-model judge (Laya / Jev): every governance question in ONE batched call.
-    //
-    // The process-level master switch is `DECISION_JUDGE=laya|jev`; when it is unset (the
-    // default) no HTTP call is made at all and the shadow path behaves exactly as before.
-    // A per-app policy may additionally opt out via `checks.decision_judge_enabled = false`.
-    //
-    // The judge never blocks delivery and never makes the final decision — it only emits
-    // per-check scores that the decision engine aggregates. Any failure yields no
-    // verdicts (absence of a shadow verdict means pass).
-    let judge: Launch<_> = if !config.decision_judge_enabled {
-        Err("decision judge off (DECISION_JUDGE unset)".to_string())
-    } else if !toggles.decision_judge {
+    // Hallucination check (Laya), run on every request: against the grounding context
+    // (a system message) when present, otherwise against the question itself. One small
+    // call (2-3 questions). It only emits scores; the decision engine aggregates them.
+    // Fails open.
+    let hallucination: Launch<_> = if !toggles.hallucination {
         Err(DISABLED_BY_POLICY.to_string())
     } else {
         match config.laya_url.as_ref() {
@@ -286,13 +276,10 @@ async fn process_message(
 
                 Ok(spawn_timed(async move {
                     let state = GovernanceState::new(&response, &prompt, context.as_deref());
-                    client.evaluate_detailed(&state).await
+                    client.evaluate_hallucination(&state).await
                 }))
             }
-            None => {
-                warn!("Decision judge enabled but LAYA_URL is not set — skipping the judge");
-                Err("LAYA_URL not set".to_string())
-            }
+            None => Err("Laya not configured (LAYA_URL unset)".to_string()),
         }
     };
 
@@ -326,7 +313,6 @@ async fn process_message(
     for (name, launch, input_label) in [
         ("pii", pii, None),
         ("toxicity", toxicity, None),
-        ("hallucination", hallucination, None),
         ("input_toxicity", input_toxicity, Some("input-toxicity")),
         ("input_bias", input_bias, Some("input-bias")),
     ] {
@@ -348,18 +334,19 @@ async fn process_message(
         }
     }
 
-    // Decision-model judge verdicts. A failed or timed-out task contributes nothing.
-    if let Some((judged, ms)) = finish("decision_judge", judge, &mut runs).await {
+    // Laya hallucination verdicts (laya-hallucination / laya-groundedness, plus
+    // sub-threshold evidence readings). A judge that never answered is an error.
+    if let Some((judged, ms)) = finish("hallucination", hallucination, &mut runs).await {
         match judged {
-            Ok(judge_verdicts) => {
-                runs.push(ran("decision_judge", ms));
-                for v in judge_verdicts {
+            Ok(laya_verdicts) => {
+                runs.push(ran("hallucination", ms));
+                for v in laya_verdicts {
                     push_verdict(&mut verdicts, Some(v), ms);
                 }
             }
             Err(e) => {
-                warn!(error = %e, "Laya judge unavailable — FAIL OPEN");
-                runs.push(run_record("decision_judge", ShadowCheckStatus::Error, Some(ms), Some(e)));
+                warn!(error = %e, "Laya hallucination check unavailable — FAIL OPEN");
+                runs.push(run_record("hallucination", ShadowCheckStatus::Error, Some(ms), Some(e)));
             }
         }
     }

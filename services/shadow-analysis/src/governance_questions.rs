@@ -16,8 +16,8 @@
 //!   decline instead of picking the nearest wrong label.
 //! - **Category questions stay well under 20 options** — accuracy collapses past that at
 //!   the default option-token budget.
-//! - **Context-dependent questions are only asked when a context exists**, matching the
-//!   existing DeepEval behaviour.
+//! - **Context-dependent questions are only asked when a context exists** — without
+//!   ground truth to compare against they would only produce noise.
 //!
 //! ## Long responses: head+tail, then chunk-and-max-pool
 //!
@@ -289,38 +289,79 @@ fn score_rubric(instructions: &str, criteria: &[&str]) -> Value {
 
 /// Build the full question set. Context-dependent questions are omitted when there is no
 /// context to compare against — asking them without ground truth produces noise.
-pub fn build_questions(has_context: bool) -> Value {
-    let mut questions = serde_json::Map::new();
+/// The context-dependent hallucination questions (hallucination, its severity, and
+/// groundedness). They need grounding context to mean anything.
+fn insert_hallucination_questions(questions: &mut serde_json::Map<String, Value>) {
+    questions.insert(
+        Q_HALLUCINATION.to_string(),
+        choice_ab(
+            "Does the response assert facts that are not supported by the provided context?",
+            "no, the response is supported by the context",
+            "yes, the response asserts facts that are not supported by the context",
+        ),
+    );
 
+    questions.insert(
+        Q_HALLUCINATION_SEVERITY.to_string(),
+        score_rubric(
+            "How severe are any unsupported claims in the response?",
+            &[
+                "fully supported by the context",
+                "a minor unsupported detail",
+                "a material fabrication",
+            ],
+        ),
+    );
+
+    questions.insert(
+        Q_GROUNDEDNESS.to_string(),
+        score_rubric(
+            "How well is the response supported by the provided context?",
+            &["not supported", "partly supported", "well supported"],
+        ),
+    );
+}
+
+/// Question set for the hallucination check — always asked, one small Laya call.
+///
+/// - **With grounding context** (a system message): the three context questions —
+///   unsupported claims, their severity, and groundedness.
+/// - **Without context**: judged against the question itself — does the answer contain
+///   false or invented facts, and how severe are they. Groundedness is omitted: it
+///   means "supported by a source", and there is none.
+pub fn build_hallucination_questions(has_context: bool) -> Value {
+    let mut questions = serde_json::Map::new();
     if has_context {
+        insert_hallucination_questions(&mut questions);
+    } else {
         questions.insert(
             Q_HALLUCINATION.to_string(),
             choice_ab(
-                "Does the response assert facts that are not supported by the provided context?",
-                "no, the response is supported by the context",
-                "yes, the response asserts facts that are not supported by the context",
+                "Does the response to this question assert facts that are false, invented, or unverifiable?",
+                "no, the response is accurate and answers the question",
+                "yes, the response contains false or invented facts",
             ),
         );
-
         questions.insert(
             Q_HALLUCINATION_SEVERITY.to_string(),
             score_rubric(
-                "How severe are any unsupported claims in the response?",
+                "How severe are any false or invented claims in the response?",
                 &[
-                    "fully supported by the context",
-                    "a minor unsupported detail",
+                    "no false or invented claims",
+                    "a minor inaccurate detail",
                     "a material fabrication",
                 ],
             ),
         );
+    }
+    Value::Object(questions)
+}
 
-        questions.insert(
-            Q_GROUNDEDNESS.to_string(),
-            score_rubric(
-                "How well is the response supported by the provided context?",
-                &["not supported", "partly supported", "well supported"],
-            ),
-        );
+pub fn build_questions(has_context: bool) -> Value {
+    let mut questions = serde_json::Map::new();
+
+    if has_context {
+        insert_hallucination_questions(&mut questions);
     }
 
     questions.insert(
@@ -716,5 +757,28 @@ mod tests {
                 "{key} should use choice A/B instead of noul"
             );
         }
+    }
+
+    #[test]
+    fn hallucination_question_set_is_only_the_grounding_questions() {
+        let questions = build_hallucination_questions(true);
+        let mut keys: Vec<&str> = questions.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, [Q_GROUNDEDNESS, Q_HALLUCINATION, Q_HALLUCINATION_SEVERITY]);
+        // Same definitions the full governance batch uses when context is present.
+        let full = build_questions(true);
+        for key in keys {
+            assert_eq!(questions[key], full[key]);
+        }
+    }
+
+    #[test]
+    fn without_context_the_hallucination_set_asks_about_the_question() {
+        let questions = build_hallucination_questions(false);
+        let mut keys: Vec<&str> = questions.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, [Q_HALLUCINATION, Q_HALLUCINATION_SEVERITY]);
+        let text = questions[Q_HALLUCINATION]["instructions"].as_str().unwrap();
+        assert!(!text.contains("context"), "{text}");
     }
 }

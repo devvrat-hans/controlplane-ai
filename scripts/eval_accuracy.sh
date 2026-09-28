@@ -442,7 +442,7 @@ if [ -z "$ROWS" ]; then
   echo "Nothing to report — an accuracy claim here would be fabricated, so there is none."
   echo ""
   echo "To populate the corpus:"
-  echo "  1. run traffic through the proxy with DECISION_JUDGE=laya|jev and the sidecar up"
+  echo "  1. run traffic through the proxy with Laya (LAYA_URL) and the guardrails sidecar up"
   echo "  2. resolve the resulting escalations (confirm / dismiss / override) in the dashboard"
   echo "  3. re-run this script"
   if [ "$DO_FIT" -eq 1 ]; then

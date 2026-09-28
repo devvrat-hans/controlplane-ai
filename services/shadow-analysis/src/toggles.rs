@@ -21,14 +21,8 @@ pub struct CheckToggles {
     pub pii_detection: bool,
     pub toxicity_detection: bool,
     pub bias_detection: bool,
-    // DeepEval hallucination (sidecar)
+    // Hallucination check (Laya decision model, needs grounding context)
     pub hallucination: bool,
-    // Decision-model judge (Laya / Jev). The process-level switch is the
-    // `DECISION_JUDGE` env var; this per-app toggle can only opt an app OUT.
-    // It defaults ON so that enabling the env var is sufficient, and so that a
-    // policy rewrite (which rebuilds the `checks` object from a whitelist) cannot
-    // silently disable the judge.
-    pub decision_judge: bool,
 }
 
 impl Default for CheckToggles {
@@ -43,10 +37,6 @@ impl Default for CheckToggles {
             toxicity_detection: true,
             bias_detection: true,
             hallucination: true,
-            // Defaults ON, but the judge only actually runs when DECISION_JUDGE=laya|jev
-            // is set on the process (see ShadowConfig). With the env var unset the judge
-            // never runs, so this default changes nothing for existing deployments.
-            decision_judge: true,
         }
     }
 }
@@ -62,7 +52,6 @@ impl CheckToggles {
         if let Some(v) = get("pii_detection") { t.pii_detection = v; }
         if let Some(v) = get("toxicity_detection") { t.toxicity_detection = v; }
         if let Some(v) = get("bias_detection") { t.bias_classification = v; t.bias_detection = v; }
-        if let Some(v) = get("decision_judge_enabled") { t.decision_judge = v; }
     }
 
     /// Apply legacy flat keys too (config written before the `checks` object existed).
@@ -74,7 +63,6 @@ impl CheckToggles {
         if let Some(b) = config.get("pii_detection").and_then(|v| v.as_bool()) { t.pii_detection = b; }
         if let Some(b) = config.get("toxicity_detection").and_then(|v| v.as_bool()) { t.toxicity_detection = b; }
         if let Some(b) = config.get("bias_detection").and_then(|v| v.as_bool()) { t.bias_classification = b; t.bias_detection = b; }
-        if let Some(b) = config.get("decision_judge_enabled").and_then(|v| v.as_bool()) { t.decision_judge = b; }
     }
 }
 
@@ -227,24 +215,13 @@ mod tests {
     }
 
     #[test]
-    fn judge_stays_on_when_policy_omits_the_key() {
-        // The process-level switch is the env var. This toggle defaults ON so that
-        // setting DECISION_JUDGE=laya is enough, and a policy rewrite that rebuilds the
-        // `checks` object (update_policy / apply_profile) cannot silently disable it.
-        let t = toggles_from_rows(&[]);
-        assert!(t.decision_judge);
-        assert!(CheckToggles::default().decision_judge);
-    }
-
-    #[test]
-    fn policy_can_opt_an_app_out_of_the_decision_judge() {
+    fn legacy_decision_judge_key_is_ignored() {
+        // The decision judge was removed; stored policies may still carry the key.
         let rows = vec![(
             "responsibility".to_string(),
             serde_json::json!({ "checks": { "decision_judge_enabled": false } }),
         )];
         let t = toggles_from_rows(&rows);
-        assert!(!t.decision_judge);
-        // Opting out must not disturb the other toggles.
         assert!(t.groundedness && t.prompt_injection && t.hallucination);
     }
 
